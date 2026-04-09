@@ -5,22 +5,29 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 /**
- * Entidade de domínio — representa um Pedido no sistema.
+ * ENTIDADE DE DOMÍNIO — representa um Pedido.
  *
- * REGRA HEXAGONAL: esta classe não pode importar nada de Spring, JPA ou
- * qualquer framework externo. Ela contém apenas lógica de negócio pura.
+ * Responsabilidades desta classe:
+ *   - Guardar o estado do pedido
+ *   - Executar transições de estado com suas invariantes
+ *     ("um pedido CONFIRMADO não pode ser confirmado novamente")
+ *
+ * O que NÃO fica aqui:
+ *   - Validação de criação (vai para PedidoDomainService)
+ *   - Fluxo de persistência ou chamadas externas (vai para o Use Case)
+ *
+ * REGRA HEXAGONAL: sem Spring, sem JPA, sem framework externo.
  */
 public class Pedido {
 
     private final UUID id;
-    private String descricao;
-    private BigDecimal valor;
+    private final String descricao;
+    private final BigDecimal valor;
     private StatusPedido status;
-    private Endereco endereco;
+    private final Endereco endereco;
     private final LocalDateTime criadoEm;
     private LocalDateTime atualizadoEm;
 
-    // Construtor privado — use os factory methods abaixo
     private Pedido(UUID id, String descricao, BigDecimal valor,
                    StatusPedido status, Endereco endereco,
                    LocalDateTime criadoEm, LocalDateTime atualizadoEm) {
@@ -34,15 +41,10 @@ public class Pedido {
     }
 
     /**
-     * Cria um novo pedido (ainda não persistido).
+     * Cria um novo pedido.
+     * Pré-condição: as regras de negócio já foram validadas pelo PedidoDomainService.
      */
     public static Pedido criar(String descricao, BigDecimal valor, Endereco endereco) {
-        if (descricao == null || descricao.isBlank()) {
-            throw new IllegalArgumentException("Descrição é obrigatória");
-        }
-        if (valor == null || valor.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new IllegalArgumentException("Valor deve ser positivo");
-        }
         return new Pedido(
                 UUID.randomUUID(),
                 descricao,
@@ -63,8 +65,13 @@ public class Pedido {
         return new Pedido(id, descricao, valor, status, endereco, criadoEm, atualizadoEm);
     }
 
-    // --- Comportamentos de domínio ---
+    // ── Comportamentos de domínio (invariantes de estado) ──────────────────
 
+    /**
+     * Confirma o pedido.
+     * INVARIANTE: só pedidos PENDENTE podem ser confirmados.
+     * Esta regra vive na entidade porque é sobre o estado interno dela.
+     */
     public void confirmar() {
         if (this.status != StatusPedido.PENDENTE) {
             throw new IllegalStateException("Apenas pedidos PENDENTE podem ser confirmados");
@@ -73,6 +80,10 @@ public class Pedido {
         this.atualizadoEm = LocalDateTime.now();
     }
 
+    /**
+     * Cancela o pedido.
+     * INVARIANTE: um pedido já cancelado não pode ser cancelado novamente.
+     */
     public void cancelar() {
         if (this.status == StatusPedido.CANCELADO) {
             throw new IllegalStateException("Pedido já está cancelado");
@@ -85,13 +96,13 @@ public class Pedido {
         return this.status == StatusPedido.PENDENTE;
     }
 
-    // --- Getters (sem setters — imutabilidade intencional) ---
+    // ── Getters (sem setters — estado muda apenas por comportamentos acima) ─
 
-    public UUID getId()                      { return id; }
-    public String getDescricao()             { return descricao; }
-    public BigDecimal getValor()             { return valor; }
-    public StatusPedido getStatus()          { return status; }
-    public Endereco getEndereco()            { return endereco; }
-    public LocalDateTime getCriadoEm()      { return criadoEm; }
-    public LocalDateTime getAtualizadoEm()  { return atualizadoEm; }
+    public UUID getId()                     { return id; }
+    public String getDescricao()            { return descricao; }
+    public BigDecimal getValor()            { return valor; }
+    public StatusPedido getStatus()         { return status; }
+    public Endereco getEndereco()           { return endereco; }
+    public LocalDateTime getCriadoEm()     { return criadoEm; }
+    public LocalDateTime getAtualizadoEm() { return atualizadoEm; }
 }

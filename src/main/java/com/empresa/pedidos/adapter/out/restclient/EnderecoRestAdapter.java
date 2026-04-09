@@ -1,7 +1,7 @@
 package com.empresa.pedidos.adapter.out.restclient;
 
 import com.empresa.pedidos.domain.model.Endereco;
-import com.empresa.pedidos.domain.port.out.EnderecoServicePort;
+import com.empresa.pedidos.application.port.out.EnderecoServicePort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;

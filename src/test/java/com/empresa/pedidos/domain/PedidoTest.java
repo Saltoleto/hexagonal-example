@@ -10,18 +10,22 @@ import java.math.BigDecimal;
 import static org.assertj.core.api.Assertions.*;
 
 /**
- * TESTE UNITARIO DE DOMINIO.
+ * TESTE DA ENTIDADE DE DOMÍNIO — Pedido.
  *
- * Testa a logica de negocio da entidade Pedido.
- * Zero dependencias de Spring, banco ou HTTP — roda em millisegundos.
+ * Testa as INVARIANTES DE ESTADO da entidade:
+ * transições de status e suas restrições.
  *
- * Esta e a camada mais importante de testar: e onde vivem as regras.
+ * Não testa validação de criação — isso é papel do PedidoDomainServiceTest.
  */
 class PedidoTest {
 
+    private Pedido pedidoPendente() {
+        return Pedido.criar("Notebook", BigDecimal.valueOf(5000), Endereco.vazio());
+    }
+
     @Test
     void deveCriarPedidoComStatusPendente() {
-        Pedido pedido = Pedido.criar("Notebook", BigDecimal.valueOf(5000), Endereco.vazio());
+        Pedido pedido = pedidoPendente();
 
         assertThat(pedido.getId()).isNotNull();
         assertThat(pedido.getStatus()).isEqualTo(StatusPedido.PENDENTE);
@@ -30,8 +34,7 @@ class PedidoTest {
 
     @Test
     void deveConfirmarPedidoPendente() {
-        Pedido pedido = Pedido.criar("Notebook", BigDecimal.valueOf(5000), Endereco.vazio());
-
+        Pedido pedido = pedidoPendente();
         pedido.confirmar();
 
         assertThat(pedido.getStatus()).isEqualTo(StatusPedido.CONFIRMADO);
@@ -39,32 +42,41 @@ class PedidoTest {
 
     @Test
     void deveLancarExcecaoAoConfirmarPedidoJaConfirmado() {
-        Pedido pedido = Pedido.criar("Notebook", BigDecimal.valueOf(5000), Endereco.vazio());
+        Pedido pedido = pedidoPendente();
         pedido.confirmar();
 
+        // INVARIANTE: não pode confirmar duas vezes
         assertThatThrownBy(pedido::confirmar)
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("PENDENTE");
     }
 
     @Test
-    void deveLancarExcecaoParaDescricaoVazia() {
-        assertThatThrownBy(() -> Pedido.criar("", BigDecimal.valueOf(100), Endereco.vazio()))
-                .isInstanceOf(IllegalArgumentException.class);
-    }
+    void deveLancarExcecaoAoConfirmarPedidoCancelado() {
+        Pedido pedido = pedidoPendente();
+        pedido.cancelar();
 
-    @Test
-    void deveLancarExcecaoParaValorZero() {
-        assertThatThrownBy(() -> Pedido.criar("Produto", BigDecimal.ZERO, Endereco.vazio()))
-                .isInstanceOf(IllegalArgumentException.class);
+        // INVARIANTE: cancelado não pode ser confirmado
+        assertThatThrownBy(pedido::confirmar)
+                .isInstanceOf(IllegalStateException.class);
     }
 
     @Test
     void deveCancelarPedido() {
-        Pedido pedido = Pedido.criar("Notebook", BigDecimal.valueOf(5000), Endereco.vazio());
-
+        Pedido pedido = pedidoPendente();
         pedido.cancelar();
 
         assertThat(pedido.getStatus()).isEqualTo(StatusPedido.CANCELADO);
+    }
+
+    @Test
+    void deveLancarExcecaoAoCancelarPedidoJaCancelado() {
+        Pedido pedido = pedidoPendente();
+        pedido.cancelar();
+
+        // INVARIANTE: não pode cancelar duas vezes
+        assertThatThrownBy(pedido::cancelar)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("cancelado");
     }
 }

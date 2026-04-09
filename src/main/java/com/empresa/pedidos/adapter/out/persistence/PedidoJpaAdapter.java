@@ -1,7 +1,7 @@
 package com.empresa.pedidos.adapter.out.persistence;
 
 import com.empresa.pedidos.domain.model.Pedido;
-import com.empresa.pedidos.domain.port.out.PedidoRepositoryPort;
+import com.empresa.pedidos.application.port.out.PedidoRepositoryPort;
 import org.springframework.stereotype.Component;
 
 import java.util.List;

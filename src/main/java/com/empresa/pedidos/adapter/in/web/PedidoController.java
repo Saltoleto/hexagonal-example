@@ -1,9 +1,9 @@
 package com.empresa.pedidos.adapter.in.web;
 
 import com.empresa.pedidos.domain.model.Pedido;
-import com.empresa.pedidos.domain.port.in.AtualizarStatusPedidoUseCase;
-import com.empresa.pedidos.domain.port.in.ConsultarPedidoUseCase;
-import com.empresa.pedidos.domain.port.in.CriarPedidoUseCase;
+import com.empresa.pedidos.application.port.in.AtualizarStatusPedidoUseCase;
+import com.empresa.pedidos.application.port.in.ConsultarPedidoUseCase;
+import com.empresa.pedidos.application.port.in.CriarPedidoUseCase;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
