@@ -16,7 +16,7 @@ import java.math.BigDecimal;
  *  - NÃO contém lógica de negócio
  *  - NÃO é a entidade de domínio
  *
- * O Controller converte este record em um Command antes de chamar o UseCase.
+ * O Controller passa os campos diretamente ao use case (sem Command intermediário — ver DA-02 no README).
  */
 public record PedidoRequest(
 

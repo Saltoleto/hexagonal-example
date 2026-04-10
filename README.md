@@ -1,170 +1,207 @@
-# Pedidos — Demo Arquitetura Hexagonal
+# Pedidos — Demo Arquitetura Hexagonal (Versão Simplificada)
 
 > Projeto demonstrativo de **Arquitetura Hexagonal (Ports & Adapters)** com Java 21 e Spring Boot 3.
-> Criado para servir como referência de estrutura e tomada de decisão arquitetural para o time.
+> Esta é a versão **pragmática e simplificada**, resultado de análise técnica sobre o que
+> é realmente necessário para garantir o padrão sem overhead desnecessário.
 
 ---
 
 ## Sumário
 
-1. [Por que Hexagonal?](#por-que-hexagonal)
-2. [Decisões arquiteturais](#decisoes-arquiteturais)
-3. [Estrutura de pacotes](#estrutura-de-pacotes)
-4. [Responsabilidade de cada pacote](#responsabilidade-de-cada-pacote)
-5. [Fluxo de uma requisição](#fluxo-de-uma-requisicao)
-6. [Stack](#stack)
-7. [Endpoints](#endpoints)
-8. [Como executar](#como-executar)
-9. [Referências](#referencias)
+1. [O que foi simplificado e por quê](#o-que-foi-simplificado-e-por-que)
+2. [O que nunca pode ser simplificado](#o-que-nunca-pode-ser-simplificado)
+3. [Decisões arquiteturais](#decisoes-arquiteturais)
+4. [Estrutura de pacotes](#estrutura-de-pacotes)
+5. [Responsabilidade de cada pacote](#responsabilidade-de-cada-pacote)
+6. [Fluxo de uma requisição](#fluxo-de-uma-requisicao)
+7. [Stack](#stack)
+8. [Endpoints](#endpoints)
+9. [Como executar](#como-executar)
+10. [Referências](#referencias)
 
 ---
 
-## Por que Hexagonal?
+## O que foi simplificado e por quê
 
-Em arquiteturas tradicionais em camadas (Controller → Service → Repository), o domínio
-de negócio fica acoplado à infraestrutura: troca de banco de dados exige alterar serviços,
-testar uma regra de negócio obriga subir JPA, mudar um endpoint vaza para dentro do core.
+O hexagonal tem **uma única regra inegociável:**
 
-A Arquitetura Hexagonal resolve isso invertendo as dependências:
-**a infraestrutura depende do domínio, nunca o contrário.**
+> As dependências sempre apontam para dentro.
+> Infraestrutura depende do domínio — nunca o contrário.
 
+Tudo que garante essa regra é essencial. O resto é convenção, não lei.
+A análise abaixo avaliou cada elemento do modelo completo e decidiu o que remover.
+
+---
+
+### Removido: Port In (interfaces de Use Case)
+
+**Antes:** `CriarPedidoUseCase`, `ConsultarPedidoUseCase`, `AtualizarStatusPedidoUseCase`
+como interfaces em `application/port/in/`.
+
+**Motivo da remoção:** o port in existe para que o Controller dependa de uma abstração,
+não da implementação concreta. Mas o Spring já resolve isso nativamente via injeção de
+dependência — o Controller nunca instancia o service diretamente.
+
+A interface adicional só traria valor real se houvesse múltiplas implementações do mesmo
+use case (ex: CriarPedidoParaClientePF vs CriarPedidoParaClientePJ), o que não é o caso.
+Em projetos com um único adapter de entrada (HTTP), é overhead sem benefício prático.
+
+**Impacto:** zero. A regra de dependência é mantida — o Controller continua sem
+conhecer detalhes de JPA, REST ou qualquer infraestrutura.
+
+---
+
+### Removido: Command record
+
+**Antes:** cada use case tinha um `Command` record que encapsulava os parâmetros de entrada.
+
+**Motivo da remoção:** o `Command` serve para desacoplar o use case do adapter de entrada,
+permitindo que diferentes adapters (HTTP, Kafka, CLI) montem o mesmo objeto. Na prática,
+se há apenas um adapter de entrada, esse desacoplamento nunca será exercitado.
+
+**O que o substituiu:** parâmetros diretos no método do use case.
+
+```java
+// Antes
+Pedido executar(Command command);
+
+// Depois
+Pedido executar(String descricao, BigDecimal valor, String cep);
 ```
-Camadas tradicionais:          Hexagonal:
-Controller                     Adapter (HTTP)
-    ↓                              ↓
-  Service          vs         Port In (interface)
-    ↓                              ↓
-Repository                    Use Case (orquestra)
-    ↓                              ↓
-  Banco                       Port Out (interface)
-                                   ↓
-                              Adapter (JPA/REST)
-                                   ↓
-                                 Banco
-```
 
-No modelo hexagonal, o domínio e os use cases não importam nada de Spring, JPA ou HTTP.
-Isso garante:
+**Quando reintroduzir:** se um segundo adapter de entrada for adicionado (consumer Kafka,
+job agendado), o `Command` volta a fazer sentido como objeto de transferência neutro.
 
-- **Testabilidade** — regras de negócio testadas sem subir contexto Spring
-- **Substituibilidade** — trocar PostgreSQL por MongoDB sem tocar no domínio
-- **Legibilidade** — a estrutura de pastas conta a história do negócio, não da tecnologia
+---
+
+### Removido: PedidoDomainService
+
+**Antes:** classe separada com as regras de validação de criação de pedido.
+
+**Motivo da remoção:** as regras eram simples e estáveis (tamanho mínimo de descrição,
+valor máximo). A entidade `Pedido.criar()` absorveu essa responsabilidade sem prejudicar
+a coesão. Um Domain Service faz sentido quando a lógica envolve múltiplas entidades
+ou quando cresce a ponto de comprometer a legibilidade da entidade.
+
+**Consequência:** `DomainConfig.java` também foi removido, pois existia apenas para
+expor o Domain Service como bean Spring.
+
+**Quando reintroduzir:** se a lógica de criação crescer, envolver outras entidades
+(ex: verificar política de crédito do cliente) ou se a entidade ficar grande demais.
+
+---
+
+### Movido: Port Out de `application/port/out/` para `application/`
+
+**Antes:** `PedidoRepositoryPort` e `EnderecoServicePort` em `application/port/out/`.
+
+**Motivo:** com a remoção do `port/in/`, o pacote `port/` perdeu razão de existir.
+Os ports out foram movidos para `application/` diretamente, onde convivem com os
+use cases que os utilizam. Menos profundidade de pacote, mesma clareza semântica.
+
+---
+
+## O que nunca pode ser simplificado
+
+Estes elementos são a essência do hexagonal. Remover qualquer um deles viola o padrão.
+
+| Elemento | Por quê é inegociável |
+|---|---|
+| `PedidoRepositoryPort` | Sem essa interface, `CriarPedidoService` importaria `JpaRepository` — infraestrutura dentro da aplicação. Quebra o hexagonal. |
+| `EnderecoServicePort` | Sem essa interface, o use case saberia que existe HTTP e ViaCEP. Mesmo problema. |
+| `PedidoJpaAdapter` implementando o port | É a inversão de dependência. O adapter depende do contrato — não o contrário. |
+| `PedidoEntity` separada de `Pedido` | Sem separação, `@Entity` entra no domínio. O domínio passaria a depender do Hibernate. |
+| `PedidoEntityMapper` | Sem ele, o adapter precisaria conhecer os internos da entidade de domínio para construí-la. |
+| Domínio sem imports de Spring/JPA | A regra fundamental. Se `Pedido.java` importar `@Entity`, o hexagonal está quebrado. |
 
 ---
 
 ## Decisões Arquiteturais
 
-Esta seção documenta explicitamente cada decisão tomada neste projeto e o motivo.
-O objetivo é que qualquer membro do time entenda o *porquê*, não só o *o quê*.
+### DA-01 — Ports out em `application/`, não em `domain/`
+
+**Decisão:** `PedidoRepositoryPort` e `EnderecoServicePort` vivem em `application/`.
+
+**Contexto:** há duas escolas:
+- **Escola DDD (Evans):** repositório é conceito de domínio → port out em `domain/`
+- **Escola Hexagonal (Hombergs):** port existe para servir o use case → em `application/`
+
+**Motivo:** `Pedido.java` não usa `PedidoRepositoryPort` em nenhum momento. Quem usa é
+o `CriarPedidoService`. Colocar a interface em `domain/` seria convenção sem benefício
+técnico — a dependência continuaria partindo do use case, não do domínio.
+
+**Referência:** reflectoring.io, Medium/@alex9954161.
 
 ---
 
-### DA-01 — Ports ficam em `application/`, não em `domain/`
+### DA-02 — Sem interface de Port In
 
-**Decisão:** as interfaces de Port In e Port Out vivem em `application/port/`, não em `domain/port/`.
+**Decisão:** Controller injeta `CriarPedidoService` diretamente, sem interface intermediária.
 
-**Contexto:** há duas escolas sobre onde os ports devem ficar:
-- Escola A: ports dentro de `domain/` (o domínio define o que precisa)
-- Escola B: ports dentro de `application/` (os ports existem para servir os use cases)
+**Motivo:** o Spring resolve o desacoplamento via injeção. A interface só seria necessária
+com múltiplos adapters de entrada ou para mockar sem `@MockBean` em testes — ambos
+não se aplicam aqui.
 
-**Motivo da escolha:** os ports são contratos definidos *pela aplicação* para permitir que
-os use cases funcionem sem depender de infraestrutura. O domínio puro (entidades, value
-objects, domain services) não tem consciência de que ports existem. Colocar ports em
-`application/` torna mais explícito que eles pertencem à camada de orquestração.
-
-Esta é a convenção adotada pela maioria dos projetos de referência levantados:
-reflectoring.io, Medium/@alex9954161, foojay.io.
-
-**Consequência:** `domain/` contém *apenas* modelo puro — sem interfaces de contrato.
-Qualquer novo integrante que abrir `domain/` verá só regras de negócio.
+**Quando reverter:** ao adicionar um segundo adapter de entrada (Kafka consumer, CLI, job).
 
 ---
 
-### DA-02 — Implementações dos Use Cases ficam em `application/usecase/`
+### DA-03 — Validação de criação absorvida pela entidade
 
-**Decisão:** as classes que implementam os ports de entrada (`CriarPedidoService`, etc.)
-ficam em `application/usecase/`, não soltas em `application/`.
+**Decisão:** `Pedido.criar()` valida as regras de criação. Sem `PedidoDomainService` separado.
 
-**Motivo:** sem o subpacote `usecase/`, a pasta `application/` misturaria interfaces
-(ports) com implementações (services), dificultando navegação. O subpacote torna explícito
-que aquelas classes *são* os casos de uso do sistema — cidadãos de primeira classe.
+**Motivo:** as regras são simples e coesas com a entidade. Domain Service é a solução
+certa quando a lógica envolve múltiplas entidades ou cresce além da responsabilidade
+de uma única classe.
 
-**Referência:** Tom Hombergs (reflectoring.io) promove use cases como "first-class
-citizens" — uma classe por caso de uso, com nome que reflete a ação de negócio.
-
----
-
-### DA-03 — Domain Services não usam `@Service` do Spring
-
-**Decisão:** `PedidoDomainService` é uma classe Java pura, instanciada manualmente
-via `DomainConfig` e exposta como `@Bean`.
-
-**Motivo:** anotar uma classe de domínio com `@Service` introduz uma dependência de
-framework no núcleo da aplicação — o oposto do que a arquitetura hexagonal propõe.
-A configuração Spring fica na borda (`config/`), não no núcleo (`domain/`).
-
-**Consequência:** `PedidoDomainService` pode ser instanciado e testado sem contexto
-Spring, em qualquer teste unitário puro.
+**Quando reverter:** ao adicionar regras que envolvam outras entidades (ex: cliente, estoque).
 
 ---
 
 ### DA-04 — `PedidoEntity` separada de `Pedido`
 
-**Decisão:** existe uma classe `PedidoEntity` com anotações JPA e uma classe `Pedido`
-de domínio. São objetos distintos, convertidos pelo `PedidoEntityMapper`.
+**Decisão:** entidade JPA e entidade de domínio são classes distintas com mapper entre elas.
 
-**Motivo:** se a entidade de domínio carregasse anotações `@Entity`, `@Column`, etc.,
-ela passaria a depender do Hibernate — um detalhe de infraestrutura. Mudanças no schema
-do banco ou na versão do ORM impactariam o domínio. A separação garante que o domínio
-evolui independentemente da persistência.
-
-**Custo:** um mapper a mais. O benefício supera o custo em projetos com vida longa.
+**Motivo:** se a entidade de domínio carregasse `@Entity`, `@Column`, etc., ela dependeria
+do Hibernate. Mudanças no schema impactariam o domínio. O custo de um mapper a mais
+é amplamente compensado pela independência do núcleo.
 
 ---
 
-### DA-05 — Um Use Case por operação
+### DA-05 — Um use case por operação
 
-**Decisão:** há três use cases separados: `CriarPedidoUseCase`, `ConsultarPedidoUseCase`
-e `AtualizarStatusPedidoUseCase`. Não existe um `PedidoService` genérico.
+**Decisão:** três services separados em vez de um `PedidoService` genérico.
 
-**Motivo:** um serviço com muitos métodos tende a acumular dependências desnecessárias.
-`ConsultarPedidoService` não precisa saber que `EnderecoServicePort` existe — e não sabe.
-Cada use case tem exatamente o que precisa, nada mais.
-
-**Referência:** Single Responsibility Principle aplicado em nível de use case.
+**Motivo:** cada use case tem exatamente o que precisa. `ConsultarPedidoService` não
+tem `EnderecoServicePort` como dependência — porque não precisa. Um service genérico
+com 10 métodos acumula todas as dependências, mesmo as desnecessárias.
 
 ---
 
-### DA-06 — Domain Service valida regras; entidade guarda invariantes de estado
+### DA-06 — Invariantes de estado na entidade
 
-**Decisão:** `PedidoDomainService` valida regras de criação (valor máximo, tamanho mínimo
-da descrição). `Pedido` guarda invariantes de transição de estado (só PENDENTE pode ser
-confirmado).
+**Decisão:** `Pedido.confirmar()` e `Pedido.cancelar()` protegem suas próprias transições.
 
-**Motivo:** a distinção é conceitual:
-- Invariante de estado → pertence à entidade (quem melhor conhece seu próprio estado)
-- Regra de criação/negócio → pode envolver múltiplos conceitos e crescer com o tempo;
-  pertence ao Domain Service
+**Motivo:** a entidade é quem conhece seu estado. Regras do tipo "só PENDENTE pode ser
+confirmado" pertencem à entidade — não ao use case, não ao adapter.
 
 ---
 
 ### DA-07 — Fallback silencioso no REST Client
 
-**Decisão:** se a API ViaCEP estiver indisponível, `EnderecoRestAdapter` retorna
-`Endereco.vazio()` em vez de lançar exceção.
+**Decisão:** falha na ViaCEP retorna `Endereco.vazio()` em vez de propagar exceção.
 
-**Motivo:** o endereço é informação enriquecedora, não bloqueante. Uma instabilidade
-na API de CEP não deve impedir a criação de um pedido. O log de erro garante visibilidade
-sem afetar a experiência do usuário.
+**Motivo:** endereço é dado enriquecedor, não bloqueante. Instabilidade em API externa
+não deve impedir a criação do pedido. Log de erro garante visibilidade operacional.
 
 ---
 
 ### DA-08 — `@Transactional(readOnly = true)` em consultas
 
-**Decisão:** `ConsultarPedidoService` usa `@Transactional(readOnly = true)`.
+**Decisão:** `ConsultarPedidoService` usa `readOnly = true`.
 
-**Motivo:** otimização que impede o Hibernate de fazer flush desnecessário, reduz
-locks no banco e pode habilitar uso de réplicas de leitura se o datasource for configurado.
+**Motivo:** impede flush desnecessário do Hibernate, reduz locks e habilita réplicas
+de leitura se o datasource estiver configurado para isso.
 
 ---
 
@@ -175,45 +212,36 @@ src/main/java/com/empresa/pedidos/
 │
 ├── domain/
 │   └── model/
-│       ├── Pedido.java
-│       ├── Endereco.java
-│       ├── StatusPedido.java
-│       ├── PedidoDomainService.java
+│       ├── Pedido.java                  Entity + validação de criação + invariantes
+│       ├── Endereco.java               Value Object imutável
+│       ├── StatusPedido.java           Enum de domínio
 │       └── PedidoNaoEncontradoException.java
 │
 ├── application/
-│   ├── port/
-│   │   ├── in/
-│   │   │   ├── CriarPedidoUseCase.java
-│   │   │   ├── ConsultarPedidoUseCase.java
-│   │   │   └── AtualizarStatusPedidoUseCase.java
-│   │   └── out/
-│   │       ├── PedidoRepositoryPort.java
-│   │       └── EnderecoServicePort.java
+│   ├── PedidoRepositoryPort.java        Port out — contrato de persistência
+│   ├── EnderecoServicePort.java         Port out — contrato de API externa
 │   └── usecase/
-│       ├── CriarPedidoService.java
-│       ├── ConsultarPedidoService.java
+│       ├── CriarPedidoService.java      Orquestra criação
+│       ├── ConsultarPedidoService.java  Orquestra consultas
 │       └── AtualizarStatusPedidoService.java
 │
 ├── adapter/
-│   ├── in/
-│   │   └── web/
-│   │       ├── PedidoController.java
-│   │       ├── PedidoRequest.java
-│   │       ├── PedidoResponse.java
-│   │       └── GlobalExceptionHandler.java
+│   ├── in/web/
+│   │   ├── PedidoController.java        Recebe HTTP
+│   │   ├── PedidoRequest.java           DTO de entrada
+│   │   ├── PedidoResponse.java          DTO de saída
+│   │   └── GlobalExceptionHandler.java
 │   └── out/
 │       ├── persistence/
-│       │   ├── PedidoJpaAdapter.java
-│       │   ├── PedidoJpaRepository.java
-│       │   ├── PedidoEntity.java
-│       │   └── PedidoEntityMapper.java
+│       │   ├── PedidoJpaAdapter.java    Implementa PedidoRepositoryPort
+│       │   ├── PedidoJpaRepository.java Spring Data
+│       │   ├── PedidoEntity.java        @Entity separada do domínio
+│       │   └── PedidoEntityMapper.java  Entity <-> Domain
 │       └── restclient/
-│           ├── EnderecoRestAdapter.java
-│           └── ViaCepResponse.java
+│           ├── EnderecoRestAdapter.java  Implementa EnderecoServicePort
+│           └── ViaCepResponse.java      DTO da API externa
 │
 ├── config/
-│   ├── DomainConfig.java
 │   └── RestTemplateConfig.java
 │
 ├── shared/
@@ -223,136 +251,116 @@ src/main/java/com/empresa/pedidos/
 └── PedidosApplication.java
 ```
 
+**Resultado da simplificação:**
+
+| | Versão completa | Versão simplificada |
+|---|---|---|
+| Arquivos Java | 33 | 27 |
+| Pacotes | 7 profundos | 5 enxutos |
+| Interfaces de use case | 3 | 0 |
+| Command records | 3 | 0 |
+| Domain Services | 1 | 0 |
+| **Hexagonal intacto?** | ✅ | ✅ |
+
 ---
 
 ## Responsabilidade de Cada Pacote
 
 ### `domain/model/`
 
-**O núcleo do sistema. Não importa nada de Spring, JPA ou qualquer framework externo.**
+**Núcleo — zero importações de Spring, JPA ou qualquer framework.**
 
 | Classe | Tipo | Responsabilidade |
 |--------|------|-----------------|
-| `Pedido` | Entity | Representa um pedido. Guarda o estado e executa transições com suas invariantes (`confirmar`, `cancelar`). Construtor privado — criação apenas via factory methods `criar()` e `reconstituir()`. |
-| `Endereco` | Value Object | Endereço imutável. Sem identidade própria — dois endereços são iguais se todos os campos forem iguais. `equals/hashCode` baseado em valor. |
-| `StatusPedido` | Enum | Estados possíveis do pedido com descrição legível. Vive no domínio porque é linguagem ubíqua do negócio. |
-| `PedidoDomainService` | Domain Service | Regras de negócio que não pertencem a uma única entidade: validação de criação, limite de valor, tamanho mínimo de descrição. Classe Java pura, sem `@Service`. |
-| `PedidoNaoEncontradoException` | Domain Exception | Exceção que o domínio lança quando um pedido não é encontrado. Vive no domínio porque é um conceito de negócio ("pedido não existe"), não um erro de infraestrutura. |
+| `Pedido` | Entity | Estado do pedido, validação de criação (`criar()`), invariantes de transição (`confirmar()`, `cancelar()`). Construtor privado, acesso via factory methods. |
+| `Endereco` | Value Object | Imutável. Igualdade por valor (equals/hashCode nos campos). `vazio()` como factory para ausência. |
+| `StatusPedido` | Enum | Estados válidos com descrição legível. Linguagem ubíqua do negócio. |
+| `PedidoNaoEncontradoException` | Exceção de domínio | Conceito de negócio ("pedido não existe"), não erro de infraestrutura. |
 
-**Regra de ouro:** se você precisar importar `org.springframework.*` ou `jakarta.persistence.*` aqui, algo está errado.
-
----
-
-### `application/port/in/`
-
-**Contratos de entrada — define o que o sistema oferece ao mundo externo.**
-
-Estas interfaces são os *Driving Ports*: qualquer coisa que queira usar o sistema
-(um controller HTTP, um job agendado, um consumer de fila) deve passar por aqui.
-
-| Classe | Responsabilidade |
-|--------|-----------------|
-| `CriarPedidoUseCase` | Contrato para criação de pedido. Contém o `Command` record com os dados de entrada. Quem chama não precisa saber como a criação funciona internamente. |
-| `ConsultarPedidoUseCase` | Contrato para leitura de pedidos — busca por ID e listagem. Separado do use case de criação para respeitar a separação de comandos e queries. |
-| `AtualizarStatusPedidoUseCase` | Contrato para mudança de status — confirmar e cancelar. Operações de negócio distintas expostas de forma explícita. |
-
-**Por que interfaces e não classes concretas?**
-O `PedidoController` depende de `CriarPedidoUseCase` (interface), não de
-`CriarPedidoService` (implementação). Se amanhã a implementação mudar completamente,
-o controller não muda uma linha.
+**Regra:** qualquer `import org.springframework` ou `import jakarta.persistence` aqui é violação.
 
 ---
 
-### `application/port/out/`
+### `application/` (raiz)
 
-**Contratos de saída — define o que o sistema precisa do mundo externo.**
-
-Estas interfaces são os *Driven Ports*: o que os use cases precisam que exista
-"lá fora" (banco de dados, API externa, fila, etc.).
+**Contratos de saída — o que os use cases precisam do mundo externo.**
 
 | Classe | Responsabilidade |
 |--------|-----------------|
-| `PedidoRepositoryPort` | O domínio precisa salvar e buscar pedidos. Como isso é feito (JPA, JDBC, MongoDB) é irrelevante para o use case. |
-| `EnderecoServicePort` | O domínio precisa buscar um endereço por CEP. A implementação pode ser ViaCEP, Correios ou qualquer outra API — o use case não sabe. |
-
-**Regra de inversão de dependência:**
-Os use cases *definem* estas interfaces. Os adapters *implementam*.
-A dependência flui de fora para dentro, nunca de dentro para fora.
+| `PedidoRepositoryPort` | Interface de persistência. Define `salvar`, `buscarPorId`, `buscarTodos`. O use case dita o contrato; o adapter JPA implementa. |
+| `EnderecoServicePort` | Interface de consulta de CEP. O use case não sabe que existe HTTP, ViaCEP ou qualquer outra tecnologia. |
 
 ---
 
 ### `application/usecase/`
 
-**Implementações dos use cases — orquestram o fluxo sem conter regra de negócio.**
+**Orquestração — coordena o fluxo sem conter regra de negócio.**
 
 | Classe | Responsabilidade |
 |--------|-----------------|
-| `CriarPedidoService` | Implementa `CriarPedidoUseCase`. Orquestra: (1) delega validação ao `PedidoDomainService`, (2) busca endereço via `EnderecoServicePort`, (3) solicita criação ao domínio, (4) persiste via `PedidoRepositoryPort`. |
-| `ConsultarPedidoService` | Implementa `ConsultarPedidoUseCase`. Delega a busca ao repositório; lança `PedidoNaoEncontradoException` se não encontrado. `@Transactional(readOnly = true)`. |
-| `AtualizarStatusPedidoService` | Implementa `AtualizarStatusPedidoUseCase`. Busca o pedido, delega a transição de estado à entidade (`pedido.confirmar()`), persiste o resultado. |
+| `CriarPedidoService` | Busca endereço → cria entidade de domínio → persiste. Sem `if` de negócio. |
+| `ConsultarPedidoService` | Delega ao repositório, lança exceção de domínio se não encontrado. `readOnly = true`. |
+| `AtualizarStatusPedidoService` | Busca → delega transição à entidade → persiste. A regra vive em `Pedido.confirmar()`. |
 
-**O que NÃO deve estar aqui:**
-Qualquer `if` de negócio ("se o valor for maior que X, rejeitar") pertence ao
-`PedidoDomainService`. O use case apenas coordena quem faz o quê — não decide o quê.
+**Sinal de alerta:** se aparecer um `if` de negócio aqui, ele pertence ao domínio.
 
 ---
 
 ### `adapter/in/web/`
 
-**Entrada HTTP — traduz requisições HTTP em chamadas aos use cases.**
+**Entrada HTTP — traduz requisição em chamada ao use case.**
 
 | Classe | Responsabilidade |
 |--------|-----------------|
-| `PedidoController` | Recebe requisições HTTP, valida formato com `@Valid`, converte `PedidoRequest` em `Command`, chama o port de entrada, converte o resultado em `PedidoResponse`. Não contém lógica de negócio. |
-| `PedidoRequest` | DTO de entrada. Define e valida o formato dos dados recebidos (`@NotBlank`, `@DecimalMin`, `@Pattern`). Não é a entidade de domínio. |
-| `PedidoResponse` | DTO de saída. Controla o que é exposto na API. Factory method `de(Pedido)` centraliza a conversão. Permite que a API evolua independente do domínio. |
-| `GlobalExceptionHandler` | `@RestControllerAdvice`. Traduz exceções de domínio (`PedidoNaoEncontradoException` → 404) e de validação (`MethodArgumentNotValidException` → 400) em respostas HTTP padronizadas com `ApiError`. |
+| `PedidoController` | Recebe HTTP, valida com `@Valid`, chama use case, retorna response. Zero lógica de negócio. |
+| `PedidoRequest` | DTO de entrada com validações de formato (`@NotBlank`, `@DecimalMin`, `@Pattern`). |
+| `PedidoResponse` | DTO de saída. Controla o contrato da API. Factory method `de(Pedido)`. |
+| `GlobalExceptionHandler` | Traduz exceções em respostas HTTP padronizadas. `PedidoNaoEncontradoException` → 404. |
 
 ---
 
 ### `adapter/out/persistence/`
 
-**Saída para banco de dados — implementa o port de repositório com JPA.**
+**Saída para banco — implementa o port de repositório com JPA.**
 
 | Classe | Responsabilidade |
 |--------|-----------------|
-| `PedidoJpaAdapter` | Implementa `PedidoRepositoryPort`. Traduz chamadas do domínio em operações JPA: `salvar`, `buscarPorId`, `buscarTodos`. Usa o mapper para converter entre mundos. |
-| `PedidoJpaRepository` | Interface Spring Data JPA. Gerenciada pelo framework. Opera sobre `PedidoEntity`, nunca sobre `Pedido` de domínio. |
-| `PedidoEntity` | Classe com anotações JPA (`@Entity`, `@Column`, etc.). Representa como o pedido é armazenado no banco. **Completamente separada da entidade de domínio** — mudanças no schema não impactam o domínio. |
-| `PedidoEntityMapper` | Converte `Pedido` (domínio) ↔ `PedidoEntity` (JPA). Mantido manual para ser explícito e didático; poderia ser gerado pelo MapStruct. |
+| `PedidoJpaAdapter` | Implementa `PedidoRepositoryPort`. Usa mapper para converter entre mundos. |
+| `PedidoJpaRepository` | Interface Spring Data JPA. Opera sobre `PedidoEntity`. |
+| `PedidoEntity` | `@Entity` com mapeamento de colunas. Separada do domínio — mudanças no schema não impactam `Pedido`. |
+| `PedidoEntityMapper` | Converte `Pedido` ↔ `PedidoEntity`. Explícito e testável. |
 
 ---
 
 ### `adapter/out/restclient/`
 
-**Saída para API externa — implementa o port de endereço consumindo a ViaCEP.**
+**Saída para API externa — implementa o port de endereço.**
 
 | Classe | Responsabilidade |
 |--------|-----------------|
-| `EnderecoRestAdapter` | Implementa `EnderecoServicePort`. Faz chamada HTTP para a ViaCEP, trata erros com fallback para `Endereco.vazio()`, loga falhas. O use case não sabe que HTTP existe. |
-| `ViaCepResponse` | DTO que mapeia exatamente o JSON da API externa. Isolado aqui para que mudanças no contrato da ViaCEP não vazem para o domínio. |
+| `EnderecoRestAdapter` | Implementa `EnderecoServicePort`. HTTP para ViaCEP com fallback silencioso (DA-07). |
+| `ViaCepResponse` | DTO do JSON da ViaCEP. Isolado aqui — mudanças na API externa não chegam ao domínio. |
 
 ---
 
 ### `config/`
 
-**Configurações Spring — a cola entre domínio e infraestrutura.**
+**Configurações Spring — beans de infraestrutura.**
 
 | Classe | Responsabilidade |
 |--------|-----------------|
-| `DomainConfig` | Expõe `PedidoDomainService` como `@Bean`. O Domain Service é Java puro (sem `@Service`) — o Spring só toma conhecimento dele aqui, na borda da aplicação. |
-| `RestTemplateConfig` | Configura o `RestTemplate` com timeouts de conexão (3s) e leitura (5s). Evita que APIs externas lentas bloqueiem threads indefinidamente. |
+| `RestTemplateConfig` | `RestTemplate` com timeout de conexão (3s) e leitura (5s). |
 
 ---
 
 ### `shared/`
 
-**Utilitários sem estado e sem regra de negócio — usados por múltiplas camadas.**
+**Utilitários sem estado, sem regra de negócio, usados por múltiplas camadas.**
 
 | Classe | Responsabilidade |
 |--------|-----------------|
-| `ApiError` | Envelope de erro padronizado. Todas as respostas de erro da API seguem esta estrutura (`status`, `erro`, `mensagem`, `timestamp`, `campos`). |
-| `CepUtil` | Utilitário estático para limpeza e formatação de CEP. Sem Spring, sem estado. Pode ser usado por qualquer camada. |
+| `ApiError` | Envelope de erro padronizado: `status`, `erro`, `mensagem`, `timestamp`, `campos`. |
+| `CepUtil` | Limpeza e formatação de CEP. Estático, sem Spring. |
 
 ---
 
@@ -362,139 +370,82 @@ Qualquer `if` de negócio ("se o valor for maior que X, rejeitar") pertence ao
 POST /api/v1/pedidos
         │
         ▼
-┌─────────────────────┐
-│  PedidoController   │  Adapter In — recebe HTTP, valida @Valid
-│  (adapter/in/web)   │  converte PedidoRequest → Command
-└────────┬────────────┘
-         │ chama Port In
+┌──────────────────────┐
+│  PedidoController    │  Adapter In — valida @Valid, chama use case
+│  adapter/in/web      │
+└────────┬─────────────┘
+         │ chama diretamente
          ▼
-┌─────────────────────┐
-│ CriarPedidoUseCase  │  Port In — interface (contrato)
-│ (application/port)  │
-└────────┬────────────┘
-         │ implementado por
-         ▼
-┌─────────────────────┐
-│ CriarPedidoService  │  Use Case — orquestra o fluxo
-│ (application/usecase│  sem conter regra de negócio
-└──┬──────────┬───────┘
-   │          │
-   │ valida   │ busca CEP
-   ▼          ▼
-┌──────────┐ ┌──────────────────┐
-│ Pedido   │ │EnderecoServicePort│  Port Out — interface
-│ Domain   │ │(application/port) │
-│ Service  │ └────────┬─────────┘
-└──────────┘          │ implementado por
-   │ cria entidade    ▼
-   ▼         ┌──────────────────┐
-┌──────────┐ │EnderecoRestAdapter│  Adapter Out — chama ViaCEP
-│  Pedido  │ │(adapter/out/rest) │
-│ (domain) │ └──────────────────┘
-└────┬─────┘
-     │ persiste via
-     ▼
-┌─────────────────────┐
-│ PedidoRepositoryPort│  Port Out — interface (contrato)
-│ (application/port)  │
-└────────┬────────────┘
-         │ implementado por
-         ▼
-┌─────────────────────┐
-│  PedidoJpaAdapter   │  Adapter Out — salva no PostgreSQL via JPA
-│ (adapter/out/persist│
-└─────────────────────┘
+┌──────────────────────┐
+│  CriarPedidoService  │  Use Case — orquestra o fluxo
+│  application/usecase │
+└──┬───────────────────┘
+   │                  │
+   │ busca CEP        │ persiste
+   ▼                  ▼
+┌──────────────┐  ┌────────────────────┐
+│EnderecoService│  │ PedidoRepository   │  Ports Out — interfaces
+│Port           │  │ Port               │
+└──────┬───────┘  └────────┬───────────┘
+       │ implementado por  │ implementado por
+       ▼                   ▼
+┌──────────────┐  ┌────────────────────┐
+│EnderecoRest  │  │ PedidoJpaAdapter   │  Adapters Out
+│Adapter       │  │ → PedidoEntity     │
+│→ ViaCEP HTTP │  │ → PostgreSQL       │
+└──────────────┘  └────────────────────┘
 ```
 
 ---
 
 ## Stack
 
-| Tecnologia       | Versão  | Uso                                          |
-|------------------|---------|----------------------------------------------|
-| Java             | 21      | Records, pattern matching, text blocks       |
-| Spring Boot      | 3.2.x   | Web, Data JPA, Validation, Actuator          |
-| PostgreSQL       | 16      | Banco relacional                             |
-| Flyway           | —       | Migrations versionadas (`V1__create_pedido.sql`) |
-| RestTemplate     | —       | Chamadas HTTP para API externa (ViaCEP)      |
-| MapStruct        | 1.5.5   | Disponível no pom.xml (mapper manual por ora)|
-| Lombok           | —       | Disponível no pom.xml                        |
-| H2               | —       | Banco em memória nos testes                  |
-| WireMock         | 3.4.2   | Mock de APIs externas nos testes             |
+| Tecnologia   | Versão | Uso                                      |
+|--------------|--------|------------------------------------------|
+| Java         | 21     | Records, pattern matching                |
+| Spring Boot  | 3.2.x  | Web, Data JPA, Validation, Actuator      |
+| PostgreSQL   | 16     | Banco relacional                         |
+| Flyway       | —      | Migrations versionadas                   |
+| RestTemplate | —      | HTTP client para ViaCEP                  |
+| H2           | —      | Banco em memória nos testes              |
+| WireMock     | 3.4.2  | Mock de APIs externas nos testes         |
 
 ---
 
 ## Endpoints
 
-| Método  | URL                              | Descrição                                      | Status |
-|---------|----------------------------------|------------------------------------------------|--------|
-| POST    | `/api/v1/pedidos`                | Cria pedido. Consulta CEP na ViaCEP se fornecido. | 201  |
-| GET     | `/api/v1/pedidos`                | Lista todos os pedidos                         | 200    |
-| GET     | `/api/v1/pedidos/{id}`           | Busca pedido por UUID                          | 200/404|
-| PATCH   | `/api/v1/pedidos/{id}/confirmar` | Confirma pedido (apenas se PENDENTE)           | 200/422|
-| PATCH   | `/api/v1/pedidos/{id}/cancelar`  | Cancela pedido (se não estiver cancelado)      | 200/422|
+| Método | URL | Descrição | Status |
+|--------|-----|-----------|--------|
+| POST | `/api/v1/pedidos` | Cria pedido. Consulta CEP se fornecido. | 201 |
+| GET | `/api/v1/pedidos` | Lista todos os pedidos | 200 |
+| GET | `/api/v1/pedidos/{id}` | Busca por UUID | 200/404 |
+| PATCH | `/api/v1/pedidos/{id}/confirmar` | Confirma (apenas PENDENTE) | 200/422 |
+| PATCH | `/api/v1/pedidos/{id}/cancelar` | Cancela | 200/422 |
 
-### Exemplo de requisição
+### Exemplo
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/pedidos \
   -H "Content-Type: application/json" \
-  -d '{
-    "descricao": "Monitor 4K",
-    "valor": 3500.00,
-    "cep": "01310-100"
-  }'
-```
-
-### Exemplo de resposta
-
-```json
-{
-  "id": "a1b2c3d4-...",
-  "descricao": "Monitor 4K",
-  "valor": 3500.00,
-  "status": "PENDENTE",
-  "statusDescricao": "Aguardando confirmação",
-  "endereco": {
-    "cep": "01310-100",
-    "logradouro": "Avenida Paulista",
-    "cidade": "São Paulo"
-  },
-  "criadoEm": "2024-04-09T10:30:00"
-}
+  -d '{"descricao": "Monitor 4K", "valor": 3500.00, "cep": "01310-100"}'
 ```
 
 ---
 
 ## Como Executar
 
-### Pré-requisitos
-
-- Java 21+
-- Maven 3.9+
-- Docker (para o PostgreSQL)
-
-### 1. Subir o banco
-
 ```bash
-docker run \
-  --name pedidos-db \
+# 1. Banco de dados
+docker run --name pedidos-db \
   -e POSTGRES_DB=pedidos_db \
   -e POSTGRES_USER=postgres \
   -e POSTGRES_PASSWORD=postgres \
-  -p 5432:5432 \
-  -d postgres:16
-```
+  -p 5432:5432 -d postgres:16
 
-### 2. Executar a aplicação
-
-```bash
+# 2. Aplicação
 ./mvnw spring-boot:run
-```
 
-### 3. Executar os testes
-
-```bash
+# 3. Testes
 ./mvnw test
 ```
 
@@ -502,50 +453,50 @@ docker run \
 
 ## Referências
 
-As decisões deste projeto foram embasadas nas seguintes fontes:
+### Padrão original
 
-### Artigos Fundamentais
-
-- **Hexagonal Architecture (Alistair Cockburn — original)**
+- **Hexagonal Architecture — Alistair Cockburn**
   https://alistair.cockburn.us/hexagonal-architecture/
-  *A fonte primária. Cockburn introduziu o padrão em 2005 com o objetivo de isolar o core da aplicação de qualquer tecnologia externa.*
+  *A fonte primária do padrão (2005). Define ports, adapters e a regra de inversão de dependência.*
 
-- **Hexagonal Architecture with Java and Spring (Tom Hombergs — reflectoring.io)**
+### Implementação em Spring Boot
+
+- **Hexagonal Architecture with Java and Spring — Tom Hombergs (reflectoring.io)**
   https://reflectoring.io/spring-hexagonal/
-  *Referência prática mais citada para implementação em Spring Boot. Define use cases como "first-class citizens" e influenciou diretamente a estrutura de `application/usecase/`.*
+  *Referência mais citada para Spring Boot. Fundamentou a decisão de ports out em `application/`
+  e use cases como cidadãos de primeira classe.*
 
-- **Hexagonal Architecture With Spring Boot (Arho Huttunen)**
+- **Hexagonal Architecture With Spring Boot — Arho Huttunen**
   https://www.arhohuttunen.com/hexagonal-architecture-spring-boot/
-  *Demonstra o uso de anotação customizada `@UseCase` para evitar `@Service` no domínio — adotado neste projeto via `DomainConfig`.*
+  *Demonstra `@UseCase` customizado para evitar `@Service` no domínio. Fundamentou DA-02 e DA-03.*
 
-### Estrutura de Pacotes
-
-- **Hexagonal Architecture in Spring Boot Microservices (Medium)**
+- **Hexagonal Architecture in Spring Boot Microservices — Medium/@alex9954161**
   https://medium.com/@alex9954161/hexagonal-architecture-in-spring-boot-microservices-a-complete-guide-with-folder-structure-be23eb11c739
-  *Referência para a estrutura `application/usecase/` + `application/port/in/` + `application/port/out/` — o padrão mais adotado no mercado em 2024/2025.*
+  *Referência para estrutura `application/usecase/` — padrão mais adotado em 2024/2025.*
 
-- **Hexagonal Architecture Template (Kamil Mazurek)**
-  https://kamilmazurek.pl/hexagonal-architecture-template
-  *Template público de referência com separação explícita de `adapters`, `ports`, `use cases` e `domain`.*
+### Simplificação e pragmatismo
 
-- **Clean and Modular Java: A Hexagonal Architecture Approach (foojay.io)**
+- **Clean and Modular Java: A Hexagonal Architecture Approach — foojay.io**
   https://foojay.io/today/clean-and-modular-java-a-hexagonal-architecture-approach/
-  *Aborda o pacote `usecase` como local canônico para os application services, sem `@Service` no domínio.*
+  *Abordagem pragmática: `usecase/` como local canônico, sem overhead de interfaces de port in.*
 
-### Conceitos Relacionados
+- **Hexagonal Architecture Template — Kamil Mazurek**
+  https://kamilmazurek.pl/hexagonal-architecture-template
+  *Template público com separação clara de adapters, ports e use cases.*
 
-- **Clean Architecture (Robert C. Martin — Uncle Bob)**
+### Conceitos relacionados
+
+- **Clean Architecture — Robert C. Martin**
   https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html
-  *A Clean Architecture e a Hexagonal compartilham o princípio de inversão de dependências. Muitos projetos mesclam as nomenclaturas (Core/Infra vs Domain/Adapters).*
+  *Hexagonal e Clean Architecture compartilham inversão de dependências. Muitos projetos
+  misturam as nomenclaturas (Core/Infra vs Domain/Adapters).*
 
-- **Domain-Driven Design Reference (Eric Evans)**
+- **Domain-Driven Design Reference — Eric Evans**
   https://www.domainlanguage.com/ddd/reference/
-  *Fundamenta os conceitos de Entity, Value Object e Domain Service usados neste projeto.*
-
-- **Hexagonal Architecture with Spring Boot (Leandro Franchi — Medium)**
-  https://leandrofranchi.medium.com/hexagonal-architecture-with-spring-boot-building-truly-scalable-systems-7948472406ed
-  *Perspectiva de engenheiro sênior em sistemas financeiros de missão crítica, com uso de `@UseCase` customizado.*
+  *Fundamenta Entity, Value Object e Domain Service. Origem da discussão sobre port out
+  em `domain/` vs `application/`.*
 
 ---
 
-*Dúvidas sobre as decisões arquiteturais? Consulte a seção [Decisões Arquiteturais](#decisoes-arquiteturais) ou abra uma discussão no repositório.*
+*Este projeto é intencionalmente didático. Cada decisão está documentada com contexto,
+motivo e condição de reversão. O objetivo é que o time entenda o porquê — não apenas copie a estrutura.*

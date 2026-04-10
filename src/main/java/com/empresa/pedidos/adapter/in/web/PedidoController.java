@@ -1,9 +1,9 @@
 package com.empresa.pedidos.adapter.in.web;
 
+import com.empresa.pedidos.application.usecase.AtualizarStatusPedidoService;
+import com.empresa.pedidos.application.usecase.ConsultarPedidoService;
+import com.empresa.pedidos.application.usecase.CriarPedidoService;
 import com.empresa.pedidos.domain.model.Pedido;
-import com.empresa.pedidos.application.port.in.AtualizarStatusPedidoUseCase;
-import com.empresa.pedidos.application.port.in.ConsultarPedidoUseCase;
-import com.empresa.pedidos.application.port.in.CriarPedidoUseCase;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -15,69 +15,58 @@ import java.util.UUID;
 /**
  * ADAPTER DE ENTRADA — Controller REST.
  *
- * Responsabilidades:
- *  - Receber a requisição HTTP
- *  - Validar o formato dos dados (@Valid)
- *  - Converter Request -> Command
- *  - Chamar o UseCase (Port In) — nunca a implementação concreta
- *  - Converter o resultado (Pedido) -> Response e retornar HTTP
+ * Injeta os use cases diretamente (@Service), sem interface de port in.
+ * Decisão documentada em DA-02 do README: o Spring garante desacoplamento
+ * via injeção — a interface adicional seria overhead sem benefício prático
+ * enquanto houver apenas um adapter de entrada.
  *
- * NÃO contém regra de negócio. Se você se pegar escrevendo
- * um if de negócio aqui, mova para o domain ou application.
+ * Responsabilidades:
+ *   - Receber HTTP e validar formato (@Valid)
+ *   - Converter Request em parâmetros para o use case
+ *   - Converter resultado em Response e retornar HTTP
  */
 @RestController
 @RequestMapping("/api/v1/pedidos")
 public class PedidoController {
 
-    private final CriarPedidoUseCase criarPedidoUseCase;
-    private final ConsultarPedidoUseCase consultarPedidoUseCase;
-    private final AtualizarStatusPedidoUseCase atualizarStatusPedidoUseCase;
+    private final CriarPedidoService criarPedidoService;
+    private final ConsultarPedidoService consultarPedidoService;
+    private final AtualizarStatusPedidoService atualizarStatusPedidoService;
 
-    public PedidoController(CriarPedidoUseCase criarPedidoUseCase,
-                             ConsultarPedidoUseCase consultarPedidoUseCase,
-                             AtualizarStatusPedidoUseCase atualizarStatusPedidoUseCase) {
-        this.criarPedidoUseCase = criarPedidoUseCase;
-        this.consultarPedidoUseCase = consultarPedidoUseCase;
-        this.atualizarStatusPedidoUseCase = atualizarStatusPedidoUseCase;
+    public PedidoController(CriarPedidoService criarPedidoService,
+                             ConsultarPedidoService consultarPedidoService,
+                             AtualizarStatusPedidoService atualizarStatusPedidoService) {
+        this.criarPedidoService = criarPedidoService;
+        this.consultarPedidoService = consultarPedidoService;
+        this.atualizarStatusPedidoService = atualizarStatusPedidoService;
     }
 
     @PostMapping
     public ResponseEntity<PedidoResponse> criar(@Valid @RequestBody PedidoRequest request) {
-        // Request -> Command (adapter converte, domain valida regras)
-        var command = new CriarPedidoUseCase.Command(
-                request.descricao(),
-                request.valor(),
-                request.cep()
-        );
-
-        Pedido pedido = criarPedidoUseCase.executar(command);
+        Pedido pedido = criarPedidoService.executar(
+                request.descricao(), request.valor(), request.cep());
         return ResponseEntity.status(HttpStatus.CREATED).body(PedidoResponse.de(pedido));
     }
 
     @GetMapping("/{id}")
     public ResponseEntity<PedidoResponse> buscarPorId(@PathVariable UUID id) {
-        Pedido pedido = consultarPedidoUseCase.buscarPorId(id);
-        return ResponseEntity.ok(PedidoResponse.de(pedido));
+        return ResponseEntity.ok(PedidoResponse.de(consultarPedidoService.buscarPorId(id)));
     }
 
     @GetMapping
     public ResponseEntity<List<PedidoResponse>> listarTodos() {
-        List<PedidoResponse> responses = consultarPedidoUseCase.listarTodos()
-                .stream()
-                .map(PedidoResponse::de)
-                .toList();
+        List<PedidoResponse> responses = consultarPedidoService.listarTodos()
+                .stream().map(PedidoResponse::de).toList();
         return ResponseEntity.ok(responses);
     }
 
     @PatchMapping("/{id}/confirmar")
     public ResponseEntity<PedidoResponse> confirmar(@PathVariable UUID id) {
-        Pedido pedido = atualizarStatusPedidoUseCase.confirmar(id);
-        return ResponseEntity.ok(PedidoResponse.de(pedido));
+        return ResponseEntity.ok(PedidoResponse.de(atualizarStatusPedidoService.confirmar(id)));
     }
 
     @PatchMapping("/{id}/cancelar")
     public ResponseEntity<PedidoResponse> cancelar(@PathVariable UUID id) {
-        Pedido pedido = atualizarStatusPedidoUseCase.cancelar(id);
-        return ResponseEntity.ok(PedidoResponse.de(pedido));
+        return ResponseEntity.ok(PedidoResponse.de(atualizarStatusPedidoService.cancelar(id)));
     }
 }

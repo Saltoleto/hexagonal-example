@@ -5,20 +5,18 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 /**
- * ENTIDADE DE DOMÍNIO — representa um Pedido.
+ * ENTIDADE DE DOMÍNIO.
  *
- * Responsabilidades desta classe:
- *   - Guardar o estado do pedido
- *   - Executar transições de estado com suas invariantes
- *     ("um pedido CONFIRMADO não pode ser confirmado novamente")
+ * Responsabilidades:
+ *   - Estado do pedido
+ *   - Invariantes de transição de estado (confirmar, cancelar)
+ *   - Regras de criação (validação absorvida — ver DA-03 no README)
  *
- * O que NÃO fica aqui:
- *   - Validação de criação (vai para PedidoDomainService)
- *   - Fluxo de persistência ou chamadas externas (vai para o Use Case)
- *
- * REGRA HEXAGONAL: sem Spring, sem JPA, sem framework externo.
+ * Sem Spring, sem JPA, sem framework externo.
  */
 public class Pedido {
+
+    private static final BigDecimal VALOR_MAXIMO = new BigDecimal("100000.00");
 
     private final UUID id;
     private final String descricao;
@@ -41,37 +39,37 @@ public class Pedido {
     }
 
     /**
-     * Cria um novo pedido.
-     * Pré-condição: as regras de negócio já foram validadas pelo PedidoDomainService.
+     * Cria um novo pedido validando as regras de negócio.
+     *
+     * Simplificação adotada (DA-03): validação absorvida pela entidade.
+     * Em domínios mais ricos, considerar PedidoDomainService.
      */
     public static Pedido criar(String descricao, BigDecimal valor, Endereco endereco) {
-        return new Pedido(
-                UUID.randomUUID(),
-                descricao,
-                valor,
-                StatusPedido.PENDENTE,
-                endereco,
-                LocalDateTime.now(),
-                LocalDateTime.now()
-        );
+        if (descricao == null || descricao.isBlank() || descricao.length() < 3) {
+            throw new IllegalArgumentException("Descrição deve ter ao menos 3 caracteres");
+        }
+        if (valor == null || valor.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Valor deve ser positivo");
+        }
+        if (valor.compareTo(VALOR_MAXIMO) > 0) {
+            throw new IllegalArgumentException(
+                "Valor não pode ultrapassar R$ %s".formatted(VALOR_MAXIMO));
+        }
+        return new Pedido(UUID.randomUUID(), descricao, valor,
+                StatusPedido.PENDENTE, endereco,
+                LocalDateTime.now(), LocalDateTime.now());
     }
 
-    /**
-     * Reconstrói um pedido já existente (vindo da persistência).
-     */
+    /** Reconstrói um pedido existente vindo da persistência. */
     public static Pedido reconstituir(UUID id, String descricao, BigDecimal valor,
                                       StatusPedido status, Endereco endereco,
                                       LocalDateTime criadoEm, LocalDateTime atualizadoEm) {
         return new Pedido(id, descricao, valor, status, endereco, criadoEm, atualizadoEm);
     }
 
-    // ── Comportamentos de domínio (invariantes de estado) ──────────────────
+    // ── Comportamentos — invariantes de estado ──────────────────────────────
 
-    /**
-     * Confirma o pedido.
-     * INVARIANTE: só pedidos PENDENTE podem ser confirmados.
-     * Esta regra vive na entidade porque é sobre o estado interno dela.
-     */
+    /** INVARIANTE: só pedidos PENDENTE podem ser confirmados. */
     public void confirmar() {
         if (this.status != StatusPedido.PENDENTE) {
             throw new IllegalStateException("Apenas pedidos PENDENTE podem ser confirmados");
@@ -80,10 +78,7 @@ public class Pedido {
         this.atualizadoEm = LocalDateTime.now();
     }
 
-    /**
-     * Cancela o pedido.
-     * INVARIANTE: um pedido já cancelado não pode ser cancelado novamente.
-     */
+    /** INVARIANTE: pedido já cancelado não pode ser cancelado novamente. */
     public void cancelar() {
         if (this.status == StatusPedido.CANCELADO) {
             throw new IllegalStateException("Pedido já está cancelado");
@@ -92,17 +87,12 @@ public class Pedido {
         this.atualizadoEm = LocalDateTime.now();
     }
 
-    public boolean isPendente() {
-        return this.status == StatusPedido.PENDENTE;
-    }
-
-    // ── Getters (sem setters — estado muda apenas por comportamentos acima) ─
-
-    public UUID getId()                     { return id; }
-    public String getDescricao()            { return descricao; }
-    public BigDecimal getValor()            { return valor; }
-    public StatusPedido getStatus()         { return status; }
-    public Endereco getEndereco()           { return endereco; }
-    public LocalDateTime getCriadoEm()     { return criadoEm; }
-    public LocalDateTime getAtualizadoEm() { return atualizadoEm; }
+    public boolean isPendente()              { return this.status == StatusPedido.PENDENTE; }
+    public UUID getId()                      { return id; }
+    public String getDescricao()             { return descricao; }
+    public BigDecimal getValor()             { return valor; }
+    public StatusPedido getStatus()          { return status; }
+    public Endereco getEndereco()            { return endereco; }
+    public LocalDateTime getCriadoEm()      { return criadoEm; }
+    public LocalDateTime getAtualizadoEm()  { return atualizadoEm; }
 }

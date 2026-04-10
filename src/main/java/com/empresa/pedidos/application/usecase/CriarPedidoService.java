@@ -1,60 +1,46 @@
 package com.empresa.pedidos.application.usecase;
 
+import com.empresa.pedidos.application.EnderecoServicePort;
+import com.empresa.pedidos.application.PedidoRepositoryPort;
 import com.empresa.pedidos.domain.model.Endereco;
 import com.empresa.pedidos.domain.model.Pedido;
-import com.empresa.pedidos.domain.model.PedidoDomainService;
-import com.empresa.pedidos.application.port.in.CriarPedidoUseCase;
-import com.empresa.pedidos.application.port.out.EnderecoServicePort;
-import com.empresa.pedidos.application.port.out.PedidoRepositoryPort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
 
 /**
  * USE CASE — Criar Pedido.
  *
- * Responsabilidade: ORQUESTRAR o fluxo de criação de um pedido.
- * Não contém regra de negócio — apenas coordena quem faz o quê e em que ordem.
+ * Orquestra o fluxo sem conter regra de negócio:
+ *   1. Busca endereço via port out (API externa)
+ *   2. Delega criação e validação ao domínio (Pedido.criar)
+ *   3. Persiste via port out
  *
- * Fluxo:
- *   1. Delega validação de negócio ao PedidoDomainService  ← REGRA (domínio)
- *   2. Busca endereço via port out (API externa)            ← EFEITO COLATERAL
- *   3. Solicita criação da entidade ao domínio              ← DOMÍNIO cria
- *   4. Persiste via port out                                ← EFEITO COLATERAL
- *
- * Distinção importante:
- *   PedidoDomainService → sabe SE pode criar (regra de negócio)
- *   CriarPedidoService  → sabe COMO criar (fluxo, ports, ordem das chamadas)
+ * Simplificação adotada (DA-02 no README): sem interface de port in.
+ * O Controller injeta este @Service diretamente. O Spring garante o
+ * desacoplamento via injeção de dependência — sem necessidade de interface
+ * adicional para um único adapter de entrada.
  */
 @Service
 @Transactional
-public class CriarPedidoService implements CriarPedidoUseCase {
+public class CriarPedidoService {
 
-    private final PedidoDomainService pedidoDomainService;
     private final PedidoRepositoryPort repositoryPort;
     private final EnderecoServicePort enderecoServicePort;
 
-    public CriarPedidoService(PedidoDomainService pedidoDomainService,
-                               PedidoRepositoryPort repositoryPort,
+    public CriarPedidoService(PedidoRepositoryPort repositoryPort,
                                EnderecoServicePort enderecoServicePort) {
-        this.pedidoDomainService = pedidoDomainService;
         this.repositoryPort = repositoryPort;
         this.enderecoServicePort = enderecoServicePort;
     }
 
-    @Override
-    public Pedido executar(Command command) {
-        // 1. DOMÍNIO valida as regras de negócio (não o Use Case)
-        pedidoDomainService.validarCriacao(command.descricao(), command.valor());
-
-        // 2. Busca endereço na API externa via port out (efeito colateral)
-        Endereco endereco = command.cep() != null
-                ? enderecoServicePort.buscarPorCep(command.cep())
+    public Pedido executar(String descricao, BigDecimal valor, String cep) {
+        Endereco endereco = cep != null
+                ? enderecoServicePort.buscarPorCep(cep)
                 : Endereco.vazio();
 
-        // 3. DOMÍNIO cria a entidade
-        Pedido pedido = Pedido.criar(command.descricao(), command.valor(), endereco);
-
-        // 4. Persiste via port out (efeito colateral)
+        Pedido pedido = Pedido.criar(descricao, valor, endereco);
         return repositoryPort.salvar(pedido);
     }
 }
