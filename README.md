@@ -1,502 +1,776 @@
-# Pedidos — Demo Arquitetura Hexagonal (Versão Simplificada)
+# saldo-service
 
-> Projeto demonstrativo de **Arquitetura Hexagonal (Ports & Adapters)** com Java 21 e Spring Boot 3.
-> Esta é a versão **pragmática e simplificada**, resultado de análise técnica sobre o que
-> é realmente necessário para garantir o padrão sem overhead desnecessário.
+Microsserviço que consome mensagens de uma fila **AWS SQS** contendo dados de saldo e os persiste em um banco **MySQL**. Também expõe um endpoint **REST** para consulta dos saldos salvos.
 
----
-
-## Sumário
-
-1. [O que foi simplificado e por quê](#o-que-foi-simplificado-e-por-que)
-2. [O que nunca pode ser simplificado](#o-que-nunca-pode-ser-simplificado)
-3. [Decisões arquiteturais](#decisoes-arquiteturais)
-4. [Estrutura de pacotes](#estrutura-de-pacotes)
-5. [Responsabilidade de cada pacote](#responsabilidade-de-cada-pacote)
-6. [Fluxo de uma requisição](#fluxo-de-uma-requisicao)
-7. [Stack](#stack)
-8. [Endpoints](#endpoints)
-9. [Como executar](#como-executar)
-10. [Referências](#referencias)
+Construído com **Arquitetura Hexagonal** (também conhecida como *Ports & Adapters*), usando **Java 17**, **Spring Boot 3** e **Maven**.
 
 ---
 
-## O que foi simplificado e por quê
+## Índice
 
-O hexagonal tem **uma única regra inegociável:**
-
-> As dependências sempre apontam para dentro.
-> Infraestrutura depende do domínio — nunca o contrário.
-
-Tudo que garante essa regra é essencial. O resto é convenção, não lei.
-A análise abaixo avaliou cada elemento do modelo completo e decidiu o que remover.
-
----
-
-### Removido: Port In (interfaces de Use Case)
-
-**Antes:** `CriarPedidoUseCase`, `ConsultarPedidoUseCase`, `AtualizarStatusPedidoUseCase`
-como interfaces em `application/port/in/`.
-
-**Motivo da remoção:** o port in existe para que o Controller dependa de uma abstração,
-não da implementação concreta. Mas o Spring já resolve isso nativamente via injeção de
-dependência — o Controller nunca instancia o service diretamente.
-
-A interface adicional só traria valor real se houvesse múltiplas implementações do mesmo
-use case (ex: CriarPedidoParaClientePF vs CriarPedidoParaClientePJ), o que não é o caso.
-Em projetos com um único adapter de entrada (HTTP), é overhead sem benefício prático.
-
-**Impacto:** zero. A regra de dependência é mantida — o Controller continua sem
-conhecer detalhes de JPA, REST ou qualquer infraestrutura.
+1. [O que é Arquitetura Hexagonal?](#1-o-que-é-arquitetura-hexagonal)
+2. [Estrutura de Pacotes](#2-estrutura-de-pacotes)
+3. [Camada `core`](#3-camada-core)
+4. [Camada `adapter`](#4-camada-adapter)
+5. [Por que alguns Beans precisam ser criados manualmente?](#5-por-que-alguns-beans-precisam-ser-criados-manualmente)
+6. [Fluxo completo de uma mensagem SQS](#6-fluxo-completo-de-uma-mensagem-sqs)
+7. [Fluxo completo de uma requisição REST](#7-fluxo-completo-de-uma-requisição-rest)
+8. [Endpoints disponíveis](#8-endpoints-disponíveis)
+9. [Configuração e execução local](#9-configuração-e-execução-local)
 
 ---
 
-### Removido: Command record
+## 1. O que é Arquitetura Hexagonal?
 
-**Antes:** cada use case tinha um `Command` record que encapsulava os parâmetros de entrada.
+Imagine que o seu sistema é uma caixa fechada — um **hexágono**. Dentro dessa caixa vive toda a lógica de negócio: as regras, os cálculos, as validações. Essa parte interna **não sabe** se está sendo chamada por uma API REST, por uma fila SQS, por um teste automatizado ou por uma linha de comando. Ela também **não sabe** se os dados estão sendo salvos no MySQL, no MongoDB ou em memória.
 
-**Motivo da remoção:** o `Command` serve para desacoplar o use case do adapter de entrada,
-permitindo que diferentes adapters (HTTP, Kafka, CLI) montem o mesmo objeto. Na prática,
-se há apenas um adapter de entrada, esse desacoplamento nunca será exercitado.
+Essa separação é o coração da arquitetura hexagonal.
 
-**O que o substituiu:** parâmetros diretos no método do use case.
+```
+         ┌─────────────────────────────────┐
+         │                                 │
+REST ───▶│  adapter/in  ───▶  CORE         │
+SQS  ───▶│  adapter/in  ───▶  (negócio)  ───▶  adapter/out  ───▶  MySQL
+         │                                 │
+         └─────────────────────────────────┘
+```
+
+A comunicação entre o mundo externo e o core acontece através de **portas** (interfaces Java).
+As **portas** definem *o que* pode ser feito. Os **adaptadores** definem *como* isso é feito tecnicamente.
+
+### A regra de ouro das dependências
+
+> A seta de dependência aponta sempre para dentro: `adapter → core`. Nunca o inverso.
+
+O `core` nunca importa nada do `adapter`. Isso garante que a lógica de negócio é completamente portável e testável sem precisar subir banco de dados, fila ou servidor HTTP.
+
+---
+
+## 2. Estrutura de Pacotes
+
+```
+src/main/java/com/example/saldo/
+│
+├── SaldoServiceApplication.java              ← Ponto de entrada da aplicação
+│
+├── core/                                     ← Lógica de negócio pura (sem framework)
+│   ├── model/
+│   │   ├── Saldo.java                        ← Entidade de domínio
+│   │   └── TipoSaldo.java                    ← Enum de domínio
+│   ├── port/
+│   │   ├── in/
+│   │   │   ├── ProcessarSaldoUseCase.java    ← Porta de entrada: processar
+│   │   │   └── BuscarSaldoUseCase.java       ← Porta de entrada: buscar
+│   │   └── out/
+│   │       └── SaldoRepositoryPort.java      ← Porta de saída: persistência
+│   └── usecase/
+│       ├── ProcessarSaldoUseCaseImpl.java    ← Implementação: processar saldo
+│       ├── BuscarSaldoUseCaseImpl.java       ← Implementação: buscar saldo
+│       └── SaldoNaoEncontradoException.java  ← Exceção de domínio
+│
+└── adapter/                                  ← Detalhes técnicos (Spring, SQS, MySQL)
+    ├── in/
+    │   ├── rest/
+    │   │   ├── SaldoController.java          ← Adaptador de entrada: HTTP/REST
+    │   │   ├── SaldoResponseDto.java         ← DTO de resposta da API
+    │   │   └── GlobalExceptionHandler.java   ← Traduz exceções de domínio → HTTP
+    │   └── sqs/
+    │       ├── SaldoSqsListener.java         ← Adaptador de entrada: AWS SQS
+    │       └── SaldoMensagemDto.java         ← DTO da mensagem SQS
+    ├── out/
+    │   └── persistence/
+    │       ├── SaldoPersistenceAdapter.java  ← Adaptador de saída: MySQL
+    │       ├── entity/
+    │       │   └── SaldoEntity.java          ← Entidade JPA (detalhe de infra)
+    │       ├── mapper/
+    │       │   └── SaldoPersistenceMapper.java  ← Converte domínio ↔ JPA
+    │       └── repository/
+    │           └── SaldoJpaRepository.java   ← Interface Spring Data JPA
+    └── config/
+        ├── ApplicationConfig.java            ← Registra os Beans do core no Spring
+        └── SqsConfig.java                    ← Configuração do cliente AWS SQS
+```
+
+---
+
+## 3. Camada `core`
+
+Esta é a camada mais importante do projeto. Ela contém **toda a lógica de negócio** e não possui nenhuma dependência de framework externo como Spring, JPA ou AWS SDK.
+
+> **Regra:** nenhum arquivo dentro de `core` pode ter `import org.springframework.*`.
+> A única exceção tolerada é `jakarta.transaction.Transactional`, que expressa uma
+> intenção de negócio (atomicidade) e não um detalhe de infraestrutura.
+
+### 3.1 `model`
+
+Os modelos são as **entidades de domínio** — os objetos que representam os conceitos do negócio.
+
+---
+
+#### `Saldo.java`
+
+Representa um registro de saldo recebido. É um **POJO puro** (Plain Old Java Object): sem anotações JPA, sem anotações Spring, sem herança de frameworks.
 
 ```java
-// Antes
-Pedido executar(Command command);
+public class Saldo {
+    private Long id;
+    private String contaId;
+    private BigDecimal valor;
+    private String moeda;
+    private TipoSaldo tipo;
+    private LocalDateTime dataReferencia;
+    private LocalDateTime dataProcessamento;
 
-// Depois
-Pedido executar(String descricao, BigDecimal valor, String cep);
+    // Regra de negócio: um saldo só é válido se tiver conta, valor, moeda e tipo
+    public boolean isValido() { ... }
+}
 ```
 
-**Quando reintroduzir:** se um segundo adapter de entrada for adicionado (consumer Kafka,
-job agendado), o `Command` volta a fazer sentido como objeto de transferência neutro.
+> **Por que não usar `@Entity` aqui?**
+> `@Entity` é uma anotação JPA — um detalhe de como os dados são salvos no banco.
+> O domínio não deveria saber que existe um banco de dados. Por isso existe a
+> `SaldoEntity.java` separada no `adapter`, que é quem carrega as anotações JPA.
 
 ---
 
-### Removido: PedidoDomainService
+#### `TipoSaldo.java`
 
-**Antes:** classe separada com as regras de validação de criação de pedido.
+Enum que define os tipos válidos de saldo no domínio do negócio.
 
-**Motivo da remoção:** as regras eram simples e estáveis (tamanho mínimo de descrição,
-valor máximo). A entidade `Pedido.criar()` absorveu essa responsabilidade sem prejudicar
-a coesão. Um Domain Service faz sentido quando a lógica envolve múltiplas entidades
-ou quando cresce a ponto de comprometer a legibilidade da entidade.
-
-**Consequência:** `DomainConfig.java` também foi removido, pois existia apenas para
-expor o Domain Service como bean Spring.
-
-**Quando reintroduzir:** se a lógica de criação crescer, envolver outras entidades
-(ex: verificar política de crédito do cliente) ou se a entidade ficar grande demais.
+```java
+public enum TipoSaldo {
+    CREDITO, DEBITO, DISPONIVEL, BLOQUEADO
+}
+```
 
 ---
 
-### Movido: Port Out de `application/port/out/` para `application/`
+### 3.2 `port/in` — Portas de Entrada
 
-**Antes:** `PedidoRepositoryPort` e `EnderecoServicePort` em `application/port/out/`.
+As portas de entrada são **interfaces Java** que definem o que o sistema consegue fazer. Elas são o contrato que os adaptadores de entrada (REST, SQS) devem chamar para acionar a lógica de negócio.
 
-**Motivo:** com a remoção do `port/in/`, o pacote `port/` perdeu razão de existir.
-Os ports out foram movidos para `application/` diretamente, onde convivem com os
-use cases que os utilizam. Menos profundidade de pacote, mesma clareza semântica.
+Pense nas portas de entrada como o **cardápio de um restaurante**: ele lista o que você pode pedir, mas não explica como a cozinha vai preparar.
 
 ---
 
-## O que nunca pode ser simplificado
+#### `ProcessarSaldoUseCase.java`
 
-Estes elementos são a essência do hexagonal. Remover qualquer um deles viola o padrão.
+Define o contrato para processar (salvar) um saldo recebido.
 
-| Elemento | Por quê é inegociável |
+```java
+public interface ProcessarSaldoUseCase {
+    Saldo processar(Saldo saldo);
+}
+```
+
+---
+
+#### `BuscarSaldoUseCase.java`
+
+Define o contrato para consultar saldos já salvos.
+
+```java
+public interface BuscarSaldoUseCase {
+    Saldo buscarPorId(Long id);
+    List<Saldo> listarPorContaId(String contaId);
+}
+```
+
+---
+
+### 3.3 `port/out` — Portas de Saída
+
+As portas de saída são **interfaces Java** que definem o que o sistema *precisa* do mundo externo. Elas são o contrato que os adaptadores de saída (banco de dados, APIs externas) devem implementar.
+
+Pense nas portas de saída como uma **lista de requisitos da cozinha**: "preciso de ingredientes frescos" — não importa de qual fornecedor.
+
+---
+
+#### `SaldoRepositoryPort.java`
+
+Define o que o core precisa em termos de persistência. O core não sabe que existe MySQL — ele só sabe que existe alguém capaz de salvar e buscar saldos.
+
+```java
+public interface SaldoRepositoryPort {
+    Saldo salvar(Saldo saldo);
+    Optional<Saldo> buscarPorId(Long id);
+    List<Saldo> listarPorContaId(String contaId);
+}
+```
+
+---
+
+### 3.4 `usecase`
+
+Os casos de uso são as **implementações das portas de entrada**. Eles orquestram o fluxo de uma operação: chamam as regras do domínio, usam as portas de saída quando necessário e coordenam o resultado.
+
+> **Importante:** os casos de uso são **POJOs puros** — sem `@Service` ou qualquer
+> anotação Spring. Eles são registrados no Spring manualmente via `ApplicationConfig`.
+> Veja o [capítulo 5](#5-por-que-alguns-beans-precisam-ser-criados-manualmente) para entender o porquê.
+
+---
+
+#### `ProcessarSaldoUseCaseImpl.java`
+
+Implementa `ProcessarSaldoUseCase`. Valida o saldo recebido usando a regra de domínio (`saldo.isValido()`) e delega a persistência à porta de saída.
+
+```java
+@Transactional  // jakarta.transaction — não é Spring
+public Saldo processar(Saldo saldo) {
+    if (!saldo.isValido()) {
+        throw new IllegalArgumentException("Saldo inválido...");
+    }
+    return saldoRepositoryPort.salvar(saldo);
+}
+```
+
+> **Por que `@Transactional` do Jakarta e não do Spring?**
+> `@Transactional` expressa uma regra de negócio: "esta operação é atômica — ou tudo
+> acontece, ou nada acontece". Isso é uma intenção de domínio, não um detalhe técnico.
+> Usar `jakarta.transaction.Transactional` (ao invés de `org.springframework...`)
+> mantém o core independente do Spring. Se a aplicação migrar para Quarkus ou Micronaut,
+> esta classe não precisa mudar — ambos os frameworks também honram a anotação Jakarta.
+
+---
+
+#### `BuscarSaldoUseCaseImpl.java`
+
+Implementa `BuscarSaldoUseCase`. Consulta saldos via porta de saída e lança exceção de domínio quando não encontrado.
+
+```java
+public Saldo buscarPorId(Long id) {
+    return saldoRepositoryPort.buscarPorId(id)
+        .orElseThrow(() -> new SaldoNaoEncontradoException("Saldo não encontrado para id=" + id));
+}
+```
+
+---
+
+#### `SaldoNaoEncontradoException.java`
+
+Exceção de domínio — representa uma situação de negócio (saldo inexistente). Não tem nenhuma anotação HTTP como `@ResponseStatus`. Quem decide que isso vira um `404` é o `GlobalExceptionHandler` no `adapter`.
+
+```java
+public class SaldoNaoEncontradoException extends RuntimeException {
+    public SaldoNaoEncontradoException(String message) {
+        super(message);
+    }
+}
+```
+
+> **Por que não colocar `@ResponseStatus(HttpStatus.NOT_FOUND)` aqui?**
+> Porque o domínio não conhece HTTP. Se amanhã esta exceção for lançada num contexto
+> de processamento de fila (sem HTTP), a anotação não faria sentido algum.
+> A decisão do status HTTP pertence ao adaptador REST.
+
+---
+
+## 4. Camada `adapter`
+
+Esta camada contém todos os **detalhes técnicos** de como o sistema se comunica com o mundo externo. Aqui moram as anotações Spring, JPA, AWS SDK e tudo que o core deliberadamente ignora.
+
+> **Regra de ouro:** um adaptador **nunca contém lógica de negócio**.
+> Ele recebe, converte e delega. Nada mais.
+
+### 4.1 `adapter/in/rest` — Adaptador REST
+
+---
+
+#### `SaldoController.java`
+
+Adaptador de entrada HTTP. Recebe requisições REST e delega ao `BuscarSaldoUseCase`.
+
+```java
+@RestController
+@RequestMapping("/saldos")
+public class SaldoController {
+
+    private final BuscarSaldoUseCase buscarSaldoUseCase;
+
+    @GetMapping("/{id}")
+    public ResponseEntity<SaldoResponseDto> buscarPorId(@PathVariable Long id) {
+        SaldoResponseDto response = SaldoResponseDto.from(buscarSaldoUseCase.buscarPorId(id));
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping
+    public ResponseEntity<List<SaldoResponseDto>> listarPorContaId(@RequestParam String contaId) {
+        ...
+    }
+}
+```
+
+Repare que o controller conhece apenas a **interface** `BuscarSaldoUseCase` — nunca a
+implementação concreta `BuscarSaldoUseCaseImpl`. Isso é injeção de dependência pela porta.
+
+---
+
+#### `SaldoResponseDto.java`
+
+DTO (Data Transfer Object) de resposta da API REST. Existe para **isolar o contrato da API do modelo de domínio**. Se o domínio mudar internamente, o contrato da API pode permanecer estável — e vice-versa.
+
+```java
+public class SaldoResponseDto {
+    // Campos com @JsonProperty para controlar o nome no JSON
+    // Método estático from(Saldo) para converter domínio → DTO
+    public static SaldoResponseDto from(Saldo saldo) { ... }
+}
+```
+
+---
+
+#### `GlobalExceptionHandler.java`
+
+Intercepta exceções lançadas pelo core e as traduz para respostas HTTP apropriadas.
+
+```java
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(SaldoNaoEncontradoException.class)
+    public ResponseEntity<...> handleNaoEncontrado(SaldoNaoEncontradoException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(...);
+    }
+}
+```
+
+| Exceção de domínio | HTTP status |
 |---|---|
-| `PedidoRepositoryPort` | Sem essa interface, `CriarPedidoService` importaria `JpaRepository` — infraestrutura dentro da aplicação. Quebra o hexagonal. |
-| `EnderecoServicePort` | Sem essa interface, o use case saberia que existe HTTP e ViaCEP. Mesmo problema. |
-| `PedidoJpaAdapter` implementando o port | É a inversão de dependência. O adapter depende do contrato — não o contrário. |
-| `PedidoEntity` separada de `Pedido` | Sem separação, `@Entity` entra no domínio. O domínio passaria a depender do Hibernate. |
-| `PedidoEntityMapper` | Sem ele, o adapter precisaria conhecer os internos da entidade de domínio para construí-la. |
-| Domínio sem imports de Spring/JPA | A regra fundamental. Se `Pedido.java` importar `@Entity`, o hexagonal está quebrado. |
+| `SaldoNaoEncontradoException` | `404 Not Found` |
+| `IllegalArgumentException` | `400 Bad Request` |
 
 ---
 
-## Decisões Arquiteturais
-
-### DA-01 — Ports out em `application/`, não em `domain/`
-
-**Decisão:** `PedidoRepositoryPort` e `EnderecoServicePort` vivem em `application/`.
-
-**Contexto:** há duas escolas:
-- **Escola DDD (Evans):** repositório é conceito de domínio → port out em `domain/`
-- **Escola Hexagonal (Hombergs):** port existe para servir o use case → em `application/`
-
-**Motivo:** `Pedido.java` não usa `PedidoRepositoryPort` em nenhum momento. Quem usa é
-o `CriarPedidoService`. Colocar a interface em `domain/` seria convenção sem benefício
-técnico — a dependência continuaria partindo do use case, não do domínio.
-
-**Referência:** reflectoring.io, Medium/@alex9954161.
+### 4.2 `adapter/in/sqs` — Adaptador SQS
 
 ---
 
-### DA-02 — Sem interface de Port In
+#### `SaldoSqsListener.java`
 
-**Decisão:** Controller injeta `CriarPedidoService` diretamente, sem interface intermediária.
+Adaptador de entrada AWS SQS. Escuta a fila, desserializa o JSON, converte para entidade de domínio e invoca `ProcessarSaldoUseCase`.
 
-**Motivo:** o Spring resolve o desacoplamento via injeção. A interface só seria necessária
-com múltiplos adapters de entrada ou para mockar sem `@MockBean` em testes — ambos
-não se aplicam aqui.
+```java
+@Component
+public class SaldoSqsListener {
 
-**Quando reverter:** ao adicionar um segundo adapter de entrada (Kafka consumer, CLI, job).
-
----
-
-### DA-03 — Validação de criação absorvida pela entidade
-
-**Decisão:** `Pedido.criar()` valida as regras de criação. Sem `PedidoDomainService` separado.
-
-**Motivo:** as regras são simples e coesas com a entidade. Domain Service é a solução
-certa quando a lógica envolve múltiplas entidades ou cresce além da responsabilidade
-de uma única classe.
-
-**Quando reverter:** ao adicionar regras que envolvam outras entidades (ex: cliente, estoque).
-
----
-
-### DA-04 — `PedidoEntity` separada de `Pedido`
-
-**Decisão:** entidade JPA e entidade de domínio são classes distintas com mapper entre elas.
-
-**Motivo:** se a entidade de domínio carregasse `@Entity`, `@Column`, etc., ela dependeria
-do Hibernate. Mudanças no schema impactariam o domínio. O custo de um mapper a mais
-é amplamente compensado pela independência do núcleo.
-
----
-
-### DA-05 — Um use case por operação
-
-**Decisão:** três services separados em vez de um `PedidoService` genérico.
-
-**Motivo:** cada use case tem exatamente o que precisa. `ConsultarPedidoService` não
-tem `EnderecoServicePort` como dependência — porque não precisa. Um service genérico
-com 10 métodos acumula todas as dependências, mesmo as desnecessárias.
-
----
-
-### DA-06 — Invariantes de estado na entidade
-
-**Decisão:** `Pedido.confirmar()` e `Pedido.cancelar()` protegem suas próprias transições.
-
-**Motivo:** a entidade é quem conhece seu estado. Regras do tipo "só PENDENTE pode ser
-confirmado" pertencem à entidade — não ao use case, não ao adapter.
-
----
-
-### DA-07 — Fallback silencioso no REST Client
-
-**Decisão:** falha na ViaCEP retorna `Endereco.vazio()` em vez de propagar exceção.
-
-**Motivo:** endereço é dado enriquecedor, não bloqueante. Instabilidade em API externa
-não deve impedir a criação do pedido. Log de erro garante visibilidade operacional.
-
----
-
-### DA-08 — `@Transactional(readOnly = true)` em consultas
-
-**Decisão:** `ConsultarPedidoService` usa `readOnly = true`.
-
-**Motivo:** impede flush desnecessário do Hibernate, reduz locks e habilita réplicas
-de leitura se o datasource estiver configurado para isso.
-
----
-
-## Estrutura de Pacotes
-
-```
-src/main/java/com/empresa/pedidos/
-│
-├── domain/
-│   └── model/
-│       ├── Pedido.java                  Entity + validação de criação + invariantes
-│       ├── Endereco.java               Value Object imutável
-│       ├── StatusPedido.java           Enum de domínio
-│       └── PedidoNaoEncontradoException.java
-│
-├── application/
-│   ├── PedidoRepositoryPort.java        Port out — contrato de persistência
-│   ├── EnderecoServicePort.java         Port out — contrato de API externa
-│   └── usecase/
-│       ├── CriarPedidoService.java      Orquestra criação
-│       ├── ConsultarPedidoService.java  Orquestra consultas
-│       └── AtualizarStatusPedidoService.java
-│
-├── adapter/
-│   ├── in/web/
-│   │   ├── PedidoController.java        Recebe HTTP
-│   │   ├── PedidoRequest.java           DTO de entrada
-│   │   ├── PedidoResponse.java          DTO de saída
-│   │   └── GlobalExceptionHandler.java
-│   └── out/
-│       ├── persistence/
-│       │   ├── PedidoJpaAdapter.java    Implementa PedidoRepositoryPort
-│       │   ├── PedidoJpaRepository.java Spring Data
-│       │   ├── PedidoEntity.java        @Entity separada do domínio
-│       │   └── PedidoEntityMapper.java  Entity <-> Domain
-│       └── restclient/
-│           ├── EnderecoRestAdapter.java  Implementa EnderecoServicePort
-│           └── ViaCepResponse.java      DTO da API externa
-│
-├── config/
-│   └── RestTemplateConfig.java
-│
-├── shared/
-│   ├── ApiError.java
-│   └── CepUtil.java
-│
-└── PedidosApplication.java
+    @SqsListener("${app.sqs.queue-name}")
+    public void onMessage(@Payload SaldoMensagemDto mensagem) {
+        Saldo saldo = toDomain(mensagem);               // converte DTO → domínio
+        processarSaldoUseCase.processar(saldo);         // delega ao core
+    }
+}
 ```
 
-**Resultado da simplificação:**
+---
 
-| | Versão completa | Versão simplificada |
+#### `SaldoMensagemDto.java`
+
+DTO que representa o payload JSON esperado na fila SQS.
+
+```json
+{
+  "conta_id": "CC-12345",
+  "valor": 1500.00,
+  "moeda": "BRL",
+  "tipo": "CREDITO",
+  "data_referencia": "2024-04-01T10:00:00"
+}
+```
+
+---
+
+### 4.3 `adapter/out/persistence` — Adaptador de Persistência
+
+---
+
+#### `SaldoPersistenceAdapter.java`
+
+Implementa a porta de saída `SaldoRepositoryPort` usando JPA e MySQL. É aqui que o contrato do domínio se conecta à tecnologia real de banco de dados.
+
+```java
+@Component
+public class SaldoPersistenceAdapter implements SaldoRepositoryPort {
+
+    @Override
+    public Saldo salvar(Saldo saldo) {
+        SaldoEntity entity = mapper.toEntity(saldo);    // domínio → JPA
+        SaldoEntity saved  = jpaRepository.save(entity);
+        return mapper.toDomain(saved);                  // JPA → domínio
+    }
+}
+```
+
+Como esta classe tem `@Component` e implementa `SaldoRepositoryPort`, o Spring a
+registra automaticamente. Quando alguém pede uma injeção de `SaldoRepositoryPort`,
+o Spring entrega esta classe — sem necessidade de `@Bean` manual.
+
+#### Por que usar `implements` e não um `@Bean` manual?
+
+Seria tecnicamente possível remover o `implements` e registrar o Bean manualmente no
+`ApplicationConfig`, delegando as chamadas à mão:
+
+```java
+// Alternativa — funcionaria, mas não é o que fazemos
+@Bean
+public SaldoRepositoryPort saldoRepositoryPort(SaldoPersistenceAdapter adapter) {
+    return new SaldoRepositoryPort() {
+        public Saldo salvar(Saldo saldo) { return adapter.salvar(saldo); }
+        public Optional<Saldo> buscarPorId(Long id) { return adapter.buscarPorId(id); }
+        public List<Saldo> listarPorContaId(String contaId) { return adapter.listarPorContaId(contaId); }
+    };
+}
+```
+
+Optamos pelo `implements` por dois motivos concretos:
+
+**1. Segurança em tempo de compilação.** Com `implements SaldoRepositoryPort`, o compilador
+garante que todos os métodos da interface estão implementados. Se você adicionar um novo
+método em `SaldoRepositoryPort` e esquecer de implementar no adapter, o build quebra
+imediatamente com erro claro. Sem o `implements`, esse erro só apareceria em runtime —
+muito mais difícil de rastrear.
+
+**2. Documentação viva no código.** Ao abrir `SaldoPersistenceAdapter` e ver
+`implements SaldoRepositoryPort`, qualquer desenvolvedor entende instantaneamente o papel
+desta classe: ela é a implementação concreta de uma porta do domínio. Sem o `implements`,
+essa informação estaria escondida dentro do `ApplicationConfig`, longe de quem está
+lendo o adapter.
+
+A regra prática do projeto é simples:
+
+> **Adaptadores de saída sempre usam `implements` + `@Component`.**
+> `@Bean` manual é reservado para as implementações de casos de uso que vivem no `core`
+> e não podem ter anotações Spring.
+
+---
+
+#### `SaldoEntity.java`
+
+Entidade JPA que representa a tabela `saldos` no banco de dados. Existe separada do `Saldo.java` do domínio para que as anotações `@Entity`, `@Table`, `@Column` não poluam o modelo de negócio.
+
+---
+
+#### `SaldoPersistenceMapper.java`
+
+Responsável por converter entre `Saldo` (domínio) e `SaldoEntity` (JPA). É a ponte entre as duas representações — garante que nenhuma das duas precisa conhecer a outra diretamente.
+
+---
+
+#### `SaldoJpaRepository.java`
+
+Interface Spring Data JPA. O Spring gera a implementação automaticamente em tempo de execução.
+
+```java
+public interface SaldoJpaRepository extends JpaRepository<SaldoEntity, Long> {
+    List<SaldoEntity> findByContaId(String contaId);
+}
+```
+
+---
+
+### 4.4 `adapter/config` — Configuração
+
+---
+
+#### `ApplicationConfig.java`
+
+Esta é a classe mais estratégica do projeto do ponto de vista arquitetural. É a **cola** entre o core (POJOs sem Spring) e o container de injeção de dependência do Spring. Veja o capítulo 5 para o raciocínio completo.
+
+```java
+@Configuration
+public class ApplicationConfig {
+
+    @Bean
+    public ProcessarSaldoUseCase processarSaldoUseCase(SaldoRepositoryPort saldoRepositoryPort) {
+        return new ProcessarSaldoUseCaseImpl(saldoRepositoryPort);
+    }
+
+    @Bean
+    public BuscarSaldoUseCase buscarSaldoUseCase(SaldoRepositoryPort saldoRepositoryPort) {
+        return new BuscarSaldoUseCaseImpl(saldoRepositoryPort);
+    }
+}
+```
+
+---
+
+#### `SqsConfig.java`
+
+Configura o cliente AWS SQS. Suporta `endpoint-override` para uso com **LocalStack** em ambiente local, sem precisar de conta AWS real.
+
+---
+
+## 5. Por que alguns Beans precisam ser criados manualmente?
+
+Esta é uma das dúvidas mais comuns ao trabalhar com arquitetura hexagonal no Spring. A resposta está em entender como o Spring descobre e registra seus Beans.
+
+### Como o Spring registra Beans automaticamente
+
+O Spring percorre os pacotes da aplicação procurando classes com anotações estereótipo:
+`@Component`, `@Service`, `@Repository`, `@RestController`. Quando encontra uma, instancia
+e registra no contexto — isso é o **component scan**.
+
+### O problema: o core não tem anotações Spring
+
+Por decisão arquitetural, as classes do `core` não podem ter `@Service` ou `@Component`.
+Se tivessem, o core passaria a depender do Spring — e toda a portabilidade da lógica de
+negócio seria perdida. Se amanhã o projeto migrar para Quarkus, cada `@Service` no core
+seria um ponto de mudança desnecessário.
+
+Sem essas anotações, o Spring não enxerga as implementações dos casos de uso durante o component scan.
+
+### A solução: `@Bean` manual no `ApplicationConfig`
+
+O `ApplicationConfig` fica no `adapter` — que *pode* conhecer o Spring. Ele age como
+intermediário: instancia os POJOs do core e os registra no contexto Spring manualmente.
+
+```
+Spring não enxerga ProcessarSaldoUseCaseImpl (sem @Component)
+        ↓
+ApplicationConfig (no adapter, conhece Spring) instancia e registra o Bean
+        ↓
+Spring passa a gerenciar ProcessarSaldoUseCaseImpl como Bean normalmente
+        ↓
+SaldoSqsListener recebe ProcessarSaldoUseCase por injeção de dependência
+```
+
+### Por que os adaptadores de saída não precisam disso?
+
+Porque eles *podem* ter `@Component` — vivem no `adapter`, não no `core`.
+
+```java
+@Component  // Spring encontra automaticamente via component scan
+public class SaldoPersistenceAdapter implements SaldoRepositoryPort { ... }
+```
+
+Quando o Spring encontra `SaldoPersistenceAdapter`, ele a registra como Bean tanto pelo
+nome da classe quanto pela interface que ela implementa (`SaldoRepositoryPort`). Então,
+quando qualquer classe pedir uma injeção de `SaldoRepositoryPort`, o Spring sabe exatamente
+o que entregar.
+
+### Tabela resumo
+
+| Classe | Onde vive | Tem `@Component`? | Precisa de `@Bean` manual? | Motivo |
+|---|---|---|---|---|
+| `ProcessarSaldoUseCaseImpl` | `core` | ❌ Não | ✅ Sim | POJO puro — core não conhece Spring |
+| `BuscarSaldoUseCaseImpl` | `core` | ❌ Não | ✅ Sim | POJO puro — core não conhece Spring |
+| `SaldoPersistenceAdapter` | `adapter` | ✅ Sim | ❌ Não | Adapter pode ter `@Component` |
+| `SaldoSqsListener` | `adapter` | ✅ Sim | ❌ Não | Adapter pode ter `@Component` |
+| `SaldoController` | `adapter` | ✅ Sim (`@RestController`) | ❌ Não | Adapter pode ter `@RestController` |
+
+### Atenção: a regra não é "adapter in precisa, adapter out não precisa"
+
+Pode parecer que adaptadores de entrada sempre precisam de `@Bean` manual e os de saída
+não. Mas isso não é uma regra — é uma coincidência do projeto atual.
+
+O que realmente determina a necessidade do `@Bean` manual é **onde vive a classe concreta**:
+
+- Se vive no `adapter` e tem `@Component` → Spring registra automaticamente
+- Se vive no `core` e é um POJO puro → precisa de `@Bean` manual
+
+Um contra-exemplo: se você tivesse **duas implementações** de `SaldoRepositoryPort` —
+por exemplo `MySQLSaldoAdapter` e `MongoSaldoAdapter` — ambas com `@Component`, o Spring
+não saberia qual injetar e lançaria erro. Nesse caso, mesmo sendo adapters de saída,
+você precisaria de um `@Bean` manual com qualificação explícita.
+
+---
+
+## 6. Fluxo completo de uma mensagem SQS
+
+```
+[Fila SQS]
+    │  Mensagem JSON: { "conta_id": "CC-001", "valor": 500.00, ... }
+    ▼
+[SaldoSqsListener]                          adapter/in/sqs
+    │  1. Recebe o payload como SaldoMensagemDto
+    │  2. Converte DTO → Saldo (entidade de domínio)
+    │  3. Chama processarSaldoUseCase.processar(saldo)
+    ▼
+[ProcessarSaldoUseCaseImpl]                 core/usecase
+    │  4. Valida: saldo.isValido()
+    │  5. Se inválido: lança IllegalArgumentException
+    │  6. Se válido: chama saldoRepositoryPort.salvar(saldo)
+    ▼
+[SaldoPersistenceAdapter]                   adapter/out/persistence
+    │  7. Converte Saldo → SaldoEntity
+    │  8. Chama jpaRepository.save(entity)
+    │  9. Converte SaldoEntity salvo → Saldo e retorna
+    ▼
+[MySQL — tabela saldos]
+```
+
+---
+
+## 7. Fluxo completo de uma requisição REST
+
+```
+[Cliente HTTP]
+    │  GET /saldos/42
+    ▼
+[SaldoController]                           adapter/in/rest
+    │  1. Recebe id=42 via @PathVariable
+    │  2. Chama buscarSaldoUseCase.buscarPorId(42)
+    ▼
+[BuscarSaldoUseCaseImpl]                    core/usecase
+    │  3. Chama saldoRepositoryPort.buscarPorId(42)
+    ▼
+[SaldoPersistenceAdapter]                   adapter/out/persistence
+    │  4. Chama jpaRepository.findById(42)
+    │  5. Se não encontrado: retorna Optional.empty()
+    │  6. Se encontrado: converte SaldoEntity → Saldo e retorna
+    ▼
+[BuscarSaldoUseCaseImpl]
+    │  7. Se Optional.empty(): lança SaldoNaoEncontradoException
+    │  8. Se encontrado: retorna Saldo para o controller
+    ▼
+[SaldoController]
+    │  9. Converte Saldo → SaldoResponseDto
+    │  10. Retorna ResponseEntity.ok(dto)
+    ▼
+[Cliente HTTP] ←── 200 OK com JSON
+
+─── Em caso de erro ───────────────────────────────────────
+
+[GlobalExceptionHandler]                    adapter/in/rest
+    │  Intercepta SaldoNaoEncontradoException lançada no core
+    │  O core não sabe nada de HTTP — apenas lança a exceção semântica
+    │  O handler decide que isso vira 404
+    ▼
+[Cliente HTTP] ←── 404 Not Found com JSON de erro
+```
+
+---
+
+## 8. Endpoints disponíveis
+
+### `GET /saldos/{id}`
+
+Busca um saldo pelo ID.
+
+**Exemplo de requisição:**
+```
+GET /saldos/1
+```
+
+**Resposta de sucesso — 200 OK:**
+```json
+{
+  "id": 1,
+  "conta_id": "CC-12345",
+  "valor": 1500.00,
+  "moeda": "BRL",
+  "tipo": "CREDITO",
+  "data_referencia": "2024-04-01T10:00:00",
+  "data_processamento": "2024-04-01T10:05:32"
+}
+```
+
+**Resposta de erro — 404 Not Found:**
+```json
+{
+  "status": 404,
+  "erro": "Não encontrado",
+  "mensagem": "Saldo não encontrado para id=1",
+  "timestamp": "2024-04-01T10:05:32"
+}
+```
+
+---
+
+### `GET /saldos?contaId={contaId}`
+
+Lista todos os saldos de uma conta.
+
+**Exemplo de requisição:**
+```
+GET /saldos?contaId=CC-12345
+```
+
+**Resposta de sucesso — 200 OK:**
+```json
+[
+  {
+    "id": 1,
+    "conta_id": "CC-12345",
+    "valor": 1500.00,
+    "moeda": "BRL",
+    "tipo": "CREDITO",
+    "data_referencia": "2024-04-01T10:00:00",
+    "data_processamento": "2024-04-01T10:05:32"
+  }
+]
+```
+
+---
+
+## 9. Configuração e execução local
+
+### Variáveis de ambiente
+
+| Variável | Padrão | Descrição |
 |---|---|---|
-| Arquivos Java | 33 | 27 |
-| Pacotes | 7 profundos | 5 enxutos |
-| Interfaces de use case | 3 | 0 |
-| Command records | 3 | 0 |
-| Domain Services | 1 | 0 |
-| **Hexagonal intacto?** | ✅ | ✅ |
+| `DB_HOST` | `localhost` | Host do MySQL |
+| `DB_PORT` | `3306` | Porta do MySQL |
+| `DB_NAME` | `saldos_db` | Nome do banco |
+| `DB_USER` | `root` | Usuário do banco |
+| `DB_PASS` | `root` | Senha do banco |
+| `AWS_REGION` | `us-east-1` | Região AWS |
+| `AWS_ACCESS_KEY_ID` | `local` | Access key AWS |
+| `AWS_SECRET_ACCESS_KEY` | `local` | Secret key AWS |
+| `AWS_ENDPOINT_OVERRIDE` | _(vazio)_ | Para LocalStack: `http://localhost:4566` |
+| `SQS_QUEUE_NAME` | `saldos-queue` | Nome da fila SQS |
 
----
-
-## Responsabilidade de Cada Pacote
-
-### `domain/model/`
-
-**Núcleo — zero importações de Spring, JPA ou qualquer framework.**
-
-| Classe | Tipo | Responsabilidade |
-|--------|------|-----------------|
-| `Pedido` | Entity | Estado do pedido, validação de criação (`criar()`), invariantes de transição (`confirmar()`, `cancelar()`). Construtor privado, acesso via factory methods. |
-| `Endereco` | Value Object | Imutável. Igualdade por valor (equals/hashCode nos campos). `vazio()` como factory para ausência. |
-| `StatusPedido` | Enum | Estados válidos com descrição legível. Linguagem ubíqua do negócio. |
-| `PedidoNaoEncontradoException` | Exceção de domínio | Conceito de negócio ("pedido não existe"), não erro de infraestrutura. |
-
-**Regra:** qualquer `import org.springframework` ou `import jakarta.persistence` aqui é violação.
-
----
-
-### `application/` (raiz)
-
-**Contratos de saída — o que os use cases precisam do mundo externo.**
-
-| Classe | Responsabilidade |
-|--------|-----------------|
-| `PedidoRepositoryPort` | Interface de persistência. Define `salvar`, `buscarPorId`, `buscarTodos`. O use case dita o contrato; o adapter JPA implementa. |
-| `EnderecoServicePort` | Interface de consulta de CEP. O use case não sabe que existe HTTP, ViaCEP ou qualquer outra tecnologia. |
-
----
-
-### `application/usecase/`
-
-**Orquestração — coordena o fluxo sem conter regra de negócio.**
-
-| Classe | Responsabilidade |
-|--------|-----------------|
-| `CriarPedidoService` | Busca endereço → cria entidade de domínio → persiste. Sem `if` de negócio. |
-| `ConsultarPedidoService` | Delega ao repositório, lança exceção de domínio se não encontrado. `readOnly = true`. |
-| `AtualizarStatusPedidoService` | Busca → delega transição à entidade → persiste. A regra vive em `Pedido.confirmar()`. |
-
-**Sinal de alerta:** se aparecer um `if` de negócio aqui, ele pertence ao domínio.
-
----
-
-### `adapter/in/web/`
-
-**Entrada HTTP — traduz requisição em chamada ao use case.**
-
-| Classe | Responsabilidade |
-|--------|-----------------|
-| `PedidoController` | Recebe HTTP, valida com `@Valid`, chama use case, retorna response. Zero lógica de negócio. |
-| `PedidoRequest` | DTO de entrada com validações de formato (`@NotBlank`, `@DecimalMin`, `@Pattern`). |
-| `PedidoResponse` | DTO de saída. Controla o contrato da API. Factory method `de(Pedido)`. |
-| `GlobalExceptionHandler` | Traduz exceções em respostas HTTP padronizadas. `PedidoNaoEncontradoException` → 404. |
-
----
-
-### `adapter/out/persistence/`
-
-**Saída para banco — implementa o port de repositório com JPA.**
-
-| Classe | Responsabilidade |
-|--------|-----------------|
-| `PedidoJpaAdapter` | Implementa `PedidoRepositoryPort`. Usa mapper para converter entre mundos. |
-| `PedidoJpaRepository` | Interface Spring Data JPA. Opera sobre `PedidoEntity`. |
-| `PedidoEntity` | `@Entity` com mapeamento de colunas. Separada do domínio — mudanças no schema não impactam `Pedido`. |
-| `PedidoEntityMapper` | Converte `Pedido` ↔ `PedidoEntity`. Explícito e testável. |
-
----
-
-### `adapter/out/restclient/`
-
-**Saída para API externa — implementa o port de endereço.**
-
-| Classe | Responsabilidade |
-|--------|-----------------|
-| `EnderecoRestAdapter` | Implementa `EnderecoServicePort`. HTTP para ViaCEP com fallback silencioso (DA-07). |
-| `ViaCepResponse` | DTO do JSON da ViaCEP. Isolado aqui — mudanças na API externa não chegam ao domínio. |
-
----
-
-### `config/`
-
-**Configurações Spring — beans de infraestrutura.**
-
-| Classe | Responsabilidade |
-|--------|-----------------|
-| `RestTemplateConfig` | `RestTemplate` com timeout de conexão (3s) e leitura (5s). |
-
----
-
-### `shared/`
-
-**Utilitários sem estado, sem regra de negócio, usados por múltiplas camadas.**
-
-| Classe | Responsabilidade |
-|--------|-----------------|
-| `ApiError` | Envelope de erro padronizado: `status`, `erro`, `mensagem`, `timestamp`, `campos`. |
-| `CepUtil` | Limpeza e formatação de CEP. Estático, sem Spring. |
-
----
-
-## Fluxo de uma Requisição
-
-```
-POST /api/v1/pedidos
-        │
-        ▼
-┌──────────────────────┐
-│  PedidoController    │  Adapter In — valida @Valid, chama use case
-│  adapter/in/web      │
-└────────┬─────────────┘
-         │ chama diretamente
-         ▼
-┌──────────────────────┐
-│  CriarPedidoService  │  Use Case — orquestra o fluxo
-│  application/usecase │
-└──┬───────────────────┘
-   │                  │
-   │ busca CEP        │ persiste
-   ▼                  ▼
-┌──────────────┐  ┌────────────────────┐
-│EnderecoService│  │ PedidoRepository   │  Ports Out — interfaces
-│Port           │  │ Port               │
-└──────┬───────┘  └────────┬───────────┘
-       │ implementado por  │ implementado por
-       ▼                   ▼
-┌──────────────┐  ┌────────────────────┐
-│EnderecoRest  │  │ PedidoJpaAdapter   │  Adapters Out
-│Adapter       │  │ → PedidoEntity     │
-│→ ViaCEP HTTP │  │ → PostgreSQL       │
-└──────────────┘  └────────────────────┘
-```
-
----
-
-## Stack
-
-| Tecnologia   | Versão | Uso                                      |
-|--------------|--------|------------------------------------------|
-| Java         | 21     | Records, pattern matching                |
-| Spring Boot  | 3.2.x  | Web, Data JPA, Validation, Actuator      |
-| PostgreSQL   | 16     | Banco relacional                         |
-| Flyway       | —      | Migrations versionadas                   |
-| RestTemplate | —      | HTTP client para ViaCEP                  |
-| H2           | —      | Banco em memória nos testes              |
-| WireMock     | 3.4.2  | Mock de APIs externas nos testes         |
-
----
-
-## Endpoints
-
-| Método | URL | Descrição | Status |
-|--------|-----|-----------|--------|
-| POST | `/api/v1/pedidos` | Cria pedido. Consulta CEP se fornecido. | 201 |
-| GET | `/api/v1/pedidos` | Lista todos os pedidos | 200 |
-| GET | `/api/v1/pedidos/{id}` | Busca por UUID | 200/404 |
-| PATCH | `/api/v1/pedidos/{id}/confirmar` | Confirma (apenas PENDENTE) | 200/422 |
-| PATCH | `/api/v1/pedidos/{id}/cancelar` | Cancela | 200/422 |
-
-### Exemplo
+### Executando localmente com LocalStack e Docker
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/pedidos \
-  -H "Content-Type: application/json" \
-  -d '{"descricao": "Monitor 4K", "valor": 3500.00, "cep": "01310-100"}'
+# 1. Sobe o LocalStack (simula AWS localmente)
+docker run -d -p 4566:4566 localstack/localstack
+
+# 2. Cria a fila SQS no LocalStack
+aws --endpoint-url=http://localhost:4566 sqs create-queue \
+    --queue-name saldos-queue --region us-east-1
+
+# 3. Sobe o MySQL
+docker run -d \
+  -p 3306:3306 \
+  -e MYSQL_ROOT_PASSWORD=root \
+  -e MYSQL_DATABASE=saldos_db \
+  mysql:8
+
+# 4. Cria a tabela no banco
+mysql -h localhost -u root -proot saldos_db < src/main/resources/schema.sql
+
+# 5. Sobe a aplicação apontando para o LocalStack
+export AWS_ENDPOINT_OVERRIDE=http://localhost:4566
+mvn spring-boot:run
 ```
 
----
-
-## Como Executar
+### Build e testes
 
 ```bash
-# 1. Banco de dados
-docker run --name pedidos-db \
-  -e POSTGRES_DB=pedidos_db \
-  -e POSTGRES_USER=postgres \
-  -e POSTGRES_PASSWORD=postgres \
-  -p 5432:5432 -d postgres:16
-
-# 2. Aplicação
-./mvnw spring-boot:run
-
-# 3. Testes
-./mvnw test
+mvn clean test       # executa os testes unitários
+mvn clean package    # gera o JAR em target/
 ```
 
----
+### Enviando uma mensagem de teste para a fila
 
-## Referências
+```bash
+aws --endpoint-url=http://localhost:4566 sqs send-message \
+  --queue-url http://localhost:4566/000000000000/saldos-queue \
+  --message-body '{
+    "conta_id": "CC-001",
+    "valor": 1500.00,
+    "moeda": "BRL",
+    "tipo": "CREDITO",
+    "data_referencia": "2024-04-01T10:00:00"
+  }'
+```
 
-### Padrão original
+Após enviar, consulte o saldo salvo via REST:
 
-- **Hexagonal Architecture — Alistair Cockburn**
-  https://alistair.cockburn.us/hexagonal-architecture/
-  *A fonte primária do padrão (2005). Define ports, adapters e a regra de inversão de dependência.*
+```bash
+# Listar por conta
+curl http://localhost:8080/saldos?contaId=CC-001
 
-### Implementação em Spring Boot
-
-- **Hexagonal Architecture with Java and Spring — Tom Hombergs (reflectoring.io)**
-  https://reflectoring.io/spring-hexagonal/
-  *Referência mais citada para Spring Boot. Fundamentou a decisão de ports out em `application/`
-  e use cases como cidadãos de primeira classe.*
-
-- **Hexagonal Architecture With Spring Boot — Arho Huttunen**
-  https://www.arhohuttunen.com/hexagonal-architecture-spring-boot/
-  *Demonstra `@UseCase` customizado para evitar `@Service` no domínio. Fundamentou DA-02 e DA-03.*
-
-- **Hexagonal Architecture in Spring Boot Microservices — Medium/@alex9954161**
-  https://medium.com/@alex9954161/hexagonal-architecture-in-spring-boot-microservices-a-complete-guide-with-folder-structure-be23eb11c739
-  *Referência para estrutura `application/usecase/` — padrão mais adotado em 2024/2025.*
-
-### Simplificação e pragmatismo
-
-- **Clean and Modular Java: A Hexagonal Architecture Approach — foojay.io**
-  https://foojay.io/today/clean-and-modular-java-a-hexagonal-architecture-approach/
-  *Abordagem pragmática: `usecase/` como local canônico, sem overhead de interfaces de port in.*
-
-- **Hexagonal Architecture Template — Kamil Mazurek**
-  https://kamilmazurek.pl/hexagonal-architecture-template
-  *Template público com separação clara de adapters, ports e use cases.*
-
-### Conceitos relacionados
-
-- **Clean Architecture — Robert C. Martin**
-  https://blog.cleancoder.com/uncle-bob/2012/08/13/the-clean-architecture.html
-  *Hexagonal e Clean Architecture compartilham inversão de dependências. Muitos projetos
-  misturam as nomenclaturas (Core/Infra vs Domain/Adapters).*
-
-- **Domain-Driven Design Reference — Eric Evans**
-  https://www.domainlanguage.com/ddd/reference/
-  *Fundamenta Entity, Value Object e Domain Service. Origem da discussão sobre port out
-  em `domain/` vs `application/`.*
-
----
-
-*Este projeto é intencionalmente didático. Cada decisão está documentada com contexto,
-motivo e condição de reversão. O objetivo é que o time entenda o porquê — não apenas copie a estrutura.*
+# Buscar por ID
+curl http://localhost:8080/saldos/1
+```
