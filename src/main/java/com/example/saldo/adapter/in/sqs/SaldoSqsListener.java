@@ -2,7 +2,7 @@ package com.example.saldo.adapter.in.sqs;
 
 import com.example.saldo.core.model.Saldo;
 import com.example.saldo.core.model.TipoSaldo;
-import com.example.saldo.core.port.in.ProcessarSaldoPort;
+import com.example.saldo.core.port.in.ProcessarSaldoEventoPort;
 import io.awspring.cloud.sqs.annotation.SqsListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,25 +10,30 @@ import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
 /**
- * Adaptador de ENTRADA (driving adapter).
- * Escuta a fila SQS, converte o DTO de mensagem para entidade de domínio
- * e invoca a porta de entrada (caso de uso).
+ * Adaptador de ENTRADA — AWS SQS.
  *
  * Responsabilidades:
- *  - Receber a mensagem
- *  - Fazer o mapeamento DTO → Domínio
- *  - Delegar ao caso de uso
- *  - Tratar erros de conversão/negócio
+ *  1. Receber a mensagem da fila
+ *  2. Deserializar e converter DTO → domínio
+ *  3. Acionar o core via ProcessarSaldoEventoPort
+ *
+ * Conhece apenas ProcessarSaldoEventoPort — o contrato que o core
+ * declarou para recebimento de eventos. Não sabe nada sobre a
+ * implementação concreta nem sobre outros contratos do core.
+ *
+ * Se amanhã o SQS for substituído por RabbitMQ ou Kafka, basta
+ * criar um novo listener que também injete ProcessarSaldoEventoPort
+ * — o core não muda, o contrato não muda.
  */
 @Component
 public class SaldoSqsListener {
 
     private static final Logger log = LoggerFactory.getLogger(SaldoSqsListener.class);
 
-    private final ProcessarSaldoPort processarSaldoPort;
+    private final ProcessarSaldoEventoPort processarSaldoEventoPort;
 
-    public SaldoSqsListener(ProcessarSaldoPort processarSaldoPort) {
-        this.processarSaldoPort = processarSaldoPort;
+    public SaldoSqsListener(ProcessarSaldoEventoPort processarSaldoEventoPort) {
+        this.processarSaldoEventoPort = processarSaldoEventoPort;
     }
 
     @SqsListener("${app.sqs.queue-name}")
@@ -37,13 +42,12 @@ public class SaldoSqsListener {
 
         try {
             Saldo saldo = toDomain(mensagem);
-            processarSaldoPort.processar(saldo);
+            processarSaldoEventoPort.aoReceberSaldo(saldo);
         } catch (IllegalArgumentException e) {
             log.error("Mensagem inválida descartada: {}", e.getMessage());
-            // Em produção: enviar para DLQ ou registrar métrica
         } catch (Exception e) {
             log.error("Erro inesperado ao processar mensagem SQS: {}", e.getMessage(), e);
-            throw e; // Re-lança para SQS retentar (se configurado)
+            throw e;
         }
     }
 

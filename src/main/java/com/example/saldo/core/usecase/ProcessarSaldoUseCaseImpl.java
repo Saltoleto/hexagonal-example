@@ -1,6 +1,7 @@
 package com.example.saldo.core.usecase;
 
 import com.example.saldo.core.model.Saldo;
+import com.example.saldo.core.port.in.ProcessarSaldoEventoPort;
 import com.example.saldo.core.port.in.ProcessarSaldoPort;
 import com.example.saldo.core.port.out.SaldoRepositoryPort;
 import jakarta.transaction.Transactional;
@@ -10,16 +11,18 @@ import org.slf4j.LoggerFactory;
 /**
  * Caso de uso: processar saldo.
  *
- * Implementa a porta de entrada ProcessarSaldoPort — é aqui que
- * o contrato declarado no core ganha comportamento concreto.
+ * Implementa duas portas de entrada:
  *
- * Responsabilidades:
- *  - Aplicar a regra de validação do domínio
- *  - Delegar a persistência à porta de saída SaldoRepositoryPort
+ *  - ProcessarSaldoPort       → contrato genérico de processamento
+ *  - ProcessarSaldoEventoPort → contrato de acionamento via evento assíncrono
+ *
+ * Ambas delegam para o mesmo método interno, garantindo que a lógica
+ * de negócio existe em um único lugar independente do mecanismo de entrada.
  *
  * POJO puro — sem anotações Spring. Registrado como Bean via ApplicationConfig.
  */
-public class ProcessarSaldoUseCaseImpl implements ProcessarSaldoPort {
+public class ProcessarSaldoUseCaseImpl
+        implements ProcessarSaldoPort, ProcessarSaldoEventoPort {
 
     private static final Logger log = LoggerFactory.getLogger(ProcessarSaldoUseCaseImpl.class);
 
@@ -42,7 +45,12 @@ public class ProcessarSaldoUseCaseImpl implements ProcessarSaldoPort {
 
         Saldo salvo = saldoRepositoryPort.salvar(saldo);
         log.info("Saldo persistido com sucesso. id={}, contaId={}", salvo.getId(), salvo.getContaId());
-
         return salvo;
+    }
+
+    @Override
+    public void aoReceberSaldo(Saldo saldo) {
+        // Delega ao método principal — a lógica vive em um único lugar
+        processar(saldo);
     }
 }

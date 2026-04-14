@@ -1,6 +1,7 @@
 package com.example.saldo.core.usecase;
 
 import com.example.saldo.core.model.Saldo;
+import com.example.saldo.core.port.in.BuscarSaldoHttpPort;
 import com.example.saldo.core.port.in.BuscarSaldoPort;
 import com.example.saldo.core.port.out.SaldoRepositoryPort;
 import org.slf4j.Logger;
@@ -11,16 +12,18 @@ import java.util.List;
 /**
  * Caso de uso: buscar saldo.
  *
- * Implementa a porta de entrada BuscarSaldoPort — é aqui que
- * o contrato declarado no core ganha comportamento concreto.
+ * Implementa duas portas de entrada:
  *
- * Responsabilidades:
- *  - Consultar saldos via porta de saída SaldoRepositoryPort
- *  - Lançar exceção de domínio quando o saldo não for encontrado
+ *  - BuscarSaldoPort     → contrato genérico de consulta
+ *  - BuscarSaldoHttpPort → contrato de acionamento via requisição HTTP
+ *
+ * Ambas delegam para os mesmos métodos internos, garantindo que a lógica
+ * de negócio existe em um único lugar independente do protocolo de entrada.
  *
  * POJO puro — sem anotações Spring. Registrado como Bean via ApplicationConfig.
  */
-public class BuscarSaldoUseCaseImpl implements BuscarSaldoPort {
+public class BuscarSaldoUseCaseImpl
+        implements BuscarSaldoPort, BuscarSaldoHttpPort {
 
     private static final Logger log = LoggerFactory.getLogger(BuscarSaldoUseCaseImpl.class);
 

@@ -57,16 +57,18 @@ src/main/java/com/example/saldo/
 │   ├── model/
 │   │   ├── Saldo.java                        ← Entidade de domínio
 │   │   └── TipoSaldo.java                    ← Enum de domínio
-│   ├── port/                                     ← apenas interfaces (contratos)
+│   ├── port/                                         ← apenas interfaces (contratos)
 │   │   ├── in/
-│   │   │   ├── ProcessarSaldoPort.java       ← Porta de entrada: processar
-│   │   │   └── BuscarSaldoPort.java          ← Porta de entrada: buscar
+│   │   │   ├── ProcessarSaldoPort.java           ← contrato genérico: processar
+│   │   │   ├── ProcessarSaldoEventoPort.java     ← contrato de acionamento via evento
+│   │   │   ├── BuscarSaldoPort.java              ← contrato genérico: buscar
+│   │   │   └── BuscarSaldoHttpPort.java          ← contrato de acionamento via HTTP
 │   │   └── out/
-│   │       └── SaldoRepositoryPort.java      ← Porta de saída: persistência
-│   └── usecase/                                  ← implementações das portas de entrada
-│       ├── ProcessarSaldoUseCaseImpl.java    ← implements ProcessarSaldoPort
-│       ├── BuscarSaldoUseCaseImpl.java       ← implements BuscarSaldoPort
-│       └── SaldoNaoEncontradoException.java  ← Exceção de domínio
+│   │       └── SaldoRepositoryPort.java          ← Porta de saída: persistência
+│   └── usecase/                                      ← implementações das portas de entrada
+│       ├── ProcessarSaldoUseCaseImpl.java        ← implements ProcessarSaldoPort + ProcessarSaldoEventoPort
+│       ├── BuscarSaldoUseCaseImpl.java           ← implements BuscarSaldoPort + BuscarSaldoHttpPort
+│       └── SaldoNaoEncontradoException.java      ← Exceção de domínio
 │
 └── adapter/                                  ← Detalhes técnicos (Spring, SQS, MySQL)
     ├── in/
@@ -147,9 +149,7 @@ public enum TipoSaldo {
 
 ### 3.2 `port/in` — Portas de Entrada
 
-As portas de entrada são **interfaces Java** que definem o que o sistema consegue fazer. Elas são o contrato que os adaptadores de entrada (REST, SQS) devem chamar para acionar a lógica de negócio.
-
-Pense nas portas de entrada como o **cardápio de um restaurante**: ele lista o que você pode pedir, mas não explica como a cozinha vai preparar.
+As portas de entrada são **interfaces Java** que definem o que o sistema consegue fazer e como aceita ser acionado. Elas são o contrato que os adaptadores de entrada (REST, SQS) devem usar para chegar ao core.
 
 #### Por que o sufixo é `Port` — e não `UseCase` como em outros projetos?
 
@@ -158,7 +158,7 @@ Uma convenção comum (vinda da Clean Architecture do Uncle Bob) é nomear as in
 > **`port/` deve conter exclusivamente interfaces — os contratos do hexágono.
 > `usecase/` deve conter exclusivamente as implementações desses contratos.**
 
-Se `port/in` tivesse interfaces chamadas `UseCase` e `port/out` tivesse interfaces chamadas `Port`, o pacote `port` misturaria dois conceitos diferentes e criaria uma assimetria confusa. Com todos os contratos nomeados como `Port`, a responsabilidade do pacote fica inequívoca:
+Com todos os contratos nomeados como `Port`, a responsabilidade de cada pacote fica inequívoca:
 
 ```
 core/port/in/   → apenas contratos de entrada  (interfaces Port)
@@ -166,34 +166,56 @@ core/port/out/  → apenas contratos de saída    (interfaces Port)
 core/usecase/   → apenas implementações        (classes que implementam os Ports de entrada)
 ```
 
-A relação entre os pacotes é direta:
+#### Dois tipos de porta em `port/in`
+
+Este projeto distingue dois tipos de porta de entrada, cada um com uma responsabilidade diferente:
+
+**Portas genéricas** — expressam a capacidade de negócio do core, sem conhecer o mecanismo de acionamento:
 
 ```
-ProcessarSaldoPort     ←── implementada por ───  ProcessarSaldoUseCaseImpl
-BuscarSaldoPort        ←── implementada por ───  BuscarSaldoUseCaseImpl
-SaldoRepositoryPort    ←── implementada por ───  SaldoPersistenceAdapter
+ProcessarSaldoPort  →  "o core sabe processar um saldo"
+BuscarSaldoPort     →  "o core sabe buscar saldos"
 ```
 
-#### `port/in` vs `port/out` — a assimetria intencional de quem implementa
+**Portas de acionamento específico** — declaram formalmente que o core aceita ser acionado por um mecanismo específico (evento assíncrono, requisição HTTP), sem saber qual tecnologia concreta será usada:
+
+```
+ProcessarSaldoEventoPort  →  "o core aceita receber saldos via evento assíncrono"
+BuscarSaldoHttpPort       →  "o core aceita consultas via requisição-resposta"
+```
+
+#### Por que separar porta genérica de porta de acionamento?
+
+Sem as portas de acionamento, os adapters chamariam diretamente as portas genéricas — o que funciona, mas significa que o core não declara formalmente que aceita cada tipo de acionamento. Se o SQS fosse trocado por RabbitMQ, nada no core garantiria que o novo listener respeita o mesmo protocolo de entrada.
+
+Com as portas de acionamento, cada adapter está vinculado a um contrato específico declarado pelo core:
+
+```
+SaldoSqsListener   →  injeta ProcessarSaldoEventoPort  (não conhece ProcessarSaldoPort)
+SaldoController    →  injeta BuscarSaldoHttpPort        (não conhece BuscarSaldoPort)
+```
+
+Se amanhã o SQS virar RabbitMQ, basta criar `SaldoRabbitListener` injetando a mesma `ProcessarSaldoEventoPort` — o core não muda, o contrato não muda, o compilador garante o protocolo.
+
+#### `port/in` vs `port/out` — quem implementa cada lado
 
 Apesar de ambos os pacotes conterem apenas interfaces `Port`, existe uma diferença fundamental em **quem implementa cada porta**:
 
-| Porta | Implementada por | Onde vive o implementador |
+| Porta | Implementada por | Onde vive |
 |---|---|---|
 | `port/in` | casos de uso | `core/usecase` — dentro do hexágono |
 | `port/out` | adaptadores | `adapter/out` — fora do hexágono |
 
-Isso reflete os dois lados do hexágono: as portas de entrada são a **face exposta** do core para o mundo chegar até ele; as portas de saída são os **buracos** pelo qual o core alcança o mundo externo.
-
-#### Poderia existir um `Port` em `port/in` com semântica puramente técnica?
-
-Sim — quando a interface de entrada não representa uma intenção de negócio mas um contrato técnico de acionamento, como recebimento genérico de eventos. Veja a seção [4.2 — Adaptador SQS](#42-adapterinsqs--adaptador-sqs) para um exemplo concreto de quando isso seria necessário.
+```
+port/in   →  implementado dentro do core  →  o core É acionado
+port/out  →  implementado fora do core    →  o core ACIONA outros
+```
 
 ---
 
 #### `ProcessarSaldoPort.java`
 
-Contrato de entrada para processamento de saldo. Agnóstico de tecnologia — não sabe se o acionamento vem de SQS, RabbitMQ, HTTP ou qualquer outro mecanismo.
+Contrato genérico de processamento. Expressa a capacidade de negócio sem vincular ao mecanismo de entrada.
 
 ```java
 public interface ProcessarSaldoPort {
@@ -203,12 +225,37 @@ public interface ProcessarSaldoPort {
 
 ---
 
+#### `ProcessarSaldoEventoPort.java`
+
+Contrato de acionamento via evento assíncrono. Declara que o core aceita receber saldos via mensageria — sem saber se é SQS, RabbitMQ ou Kafka.
+
+```java
+public interface ProcessarSaldoEventoPort {
+    void aoReceberSaldo(Saldo saldo);
+}
+```
+
+---
+
 #### `BuscarSaldoPort.java`
 
-Contrato de entrada para consulta de saldos. Agnóstico de protocolo — não sabe se a requisição veio de REST, gRPC ou outro canal.
+Contrato genérico de consulta. Expressa a capacidade de negócio sem vincular ao protocolo de entrada.
 
 ```java
 public interface BuscarSaldoPort {
+    Saldo buscarPorId(Long id);
+    List<Saldo> listarPorContaId(String contaId);
+}
+```
+
+---
+
+#### `BuscarSaldoHttpPort.java`
+
+Contrato de acionamento via requisição HTTP. Declara que o core aceita consultas via protocolo de requisição-resposta — sem saber se é REST, gRPC ou outro.
+
+```java
+public interface BuscarSaldoHttpPort {
     Saldo buscarPorId(Long id);
     List<Saldo> listarPorContaId(String contaId);
 }
@@ -222,26 +269,13 @@ As portas de saída são **interfaces Java** que definem o que o sistema *precis
 
 Pense nas portas de saída como uma **lista de requisitos da cozinha**: "preciso de ingredientes frescos" — não importa de qual fornecedor.
 
-#### Por que o sufixo é `Port` aqui também?
-
-Porque a responsabilidade do pacote `port/` é única: **conter contratos**. Tanto `port/in` quanto `port/out` têm apenas interfaces. O sufixo `Port` em ambos reforça que são contratos do hexágono — a diferença está na direção, não no tipo.
-
 ```
 SaldoRepositoryPort  →  "o core precisa de alguém que saiba persistir saldos"
 ```
 
-A assimetria que importa não é no nome, mas em quem implementa:
-
 ```
 port/in   →  implementado dentro do core   (usecase)   →  o core É acionado
 port/out  →  implementado fora do core     (adapter)   →  o core ACIONA outros
-```
-
-A assimetria entre os sufixos é intencional e resume bem os dois lados da arquitetura:
-
-```
-port/in   →  o mundo externo chama o core   →  UseCase  →  "o que o sistema FAZ"
-port/out  →  o core chama o mundo externo   →  Port     →  "o que o sistema PRECISA"
 ```
 
 ---
@@ -262,14 +296,25 @@ public interface SaldoRepositoryPort {
 
 ### 3.4 `usecase`
 
-Os casos de uso são as **implementações das portas de entrada**. Cada classe aqui implementa exatamente uma interface de `port/in` e orquestra o fluxo da operação: aplica regras do domínio e delega à porta de saída quando necessário.
-
-A relação é direta e simétrica:
+Os casos de uso são as **implementações das portas de entrada**. Cada classe implementa tanto a porta genérica quanto a porta de acionamento do seu mecanismo, garantindo que a lógica de negócio vive em um único lugar independente de quem aciona.
 
 ```
-port/in/ProcessarSaldoPort   ←── implements ──  usecase/ProcessarSaldoUseCaseImpl
-port/in/BuscarSaldoPort      ←── implements ──  usecase/BuscarSaldoUseCaseImpl
+ProcessarSaldoUseCaseImpl  →  implements ProcessarSaldoPort + ProcessarSaldoEventoPort
+BuscarSaldoUseCaseImpl     →  implements BuscarSaldoPort    + BuscarSaldoHttpPort
 ```
+
+As portas de acionamento específico delegam sempre para o método da porta genérica:
+
+```java
+// ProcessarSaldoUseCaseImpl
+public void aoReceberSaldo(Saldo saldo) {
+    this.processar(saldo); // delega ao método principal — lógica em um único lugar
+}
+```
+
+Isso garante que não há duplicação de lógica: independente de como o saldo chegou (SQS, HTTP, teste), o mesmo fluxo de validação e persistência é executado.
+
+
 
 > **Importante:** os casos de uso são **POJOs puros** — sem `@Service` ou qualquer
 > anotação Spring. Eles são registrados no Spring manualmente via `ApplicationConfig`.
@@ -279,10 +324,11 @@ port/in/BuscarSaldoPort      ←── implements ──  usecase/BuscarSaldoUse
 
 #### `ProcessarSaldoUseCaseImpl.java`
 
-Implementa `ProcessarSaldoPort`. Valida o saldo recebido usando a regra de domínio (`saldo.isValido()`) e delega a persistência à porta de saída.
+Implementa `ProcessarSaldoPort` + `ProcessarSaldoEventoPort`. A porta de evento delega ao método principal — lógica em um único lugar.
 
 ```java
-public class ProcessarSaldoUseCaseImpl implements ProcessarSaldoPort {
+public class ProcessarSaldoUseCaseImpl
+        implements ProcessarSaldoPort, ProcessarSaldoEventoPort {
 
     @Transactional  // jakarta.transaction — não é Spring
     public Saldo processar(Saldo saldo) {
@@ -290,6 +336,10 @@ public class ProcessarSaldoUseCaseImpl implements ProcessarSaldoPort {
             throw new IllegalArgumentException("Saldo inválido...");
         }
         return saldoRepositoryPort.salvar(saldo);
+    }
+
+    public void aoReceberSaldo(Saldo saldo) {
+        this.processar(saldo); // delega — não duplica lógica
     }
 }
 ```
@@ -305,10 +355,11 @@ public class ProcessarSaldoUseCaseImpl implements ProcessarSaldoPort {
 
 #### `BuscarSaldoUseCaseImpl.java`
 
-Implementa `BuscarSaldoPort`. Consulta saldos via porta de saída e lança exceção de domínio quando não encontrado.
+Implementa `BuscarSaldoPort` + `BuscarSaldoHttpPort`. Como ambas as interfaces têm os mesmos métodos, uma única implementação satisfaz os dois contratos.
 
 ```java
-public class BuscarSaldoUseCaseImpl implements BuscarSaldoPort {
+public class BuscarSaldoUseCaseImpl
+        implements BuscarSaldoPort, BuscarSaldoHttpPort {
 
     public Saldo buscarPorId(Long id) {
         return saldoRepositoryPort.buscarPorId(id)
@@ -351,18 +402,19 @@ Esta camada contém todos os **detalhes técnicos** de como o sistema se comunic
 
 #### `SaldoController.java`
 
-Adaptador de entrada HTTP. Recebe requisições REST e delega ao `BuscarSaldoPort`.
+Adaptador de entrada HTTP. Recebe requisições REST e delega ao core via `BuscarSaldoHttpPort` — o contrato que o core declarou especificamente para acionamentos via requisição-resposta.
 
 ```java
 @RestController
 @RequestMapping("/saldos")
 public class SaldoController {
 
-    private final BuscarSaldoPort buscarSaldoPort;
+    private final BuscarSaldoHttpPort buscarSaldoHttpPort;
 
     @GetMapping("/{id}")
     public ResponseEntity<SaldoResponseDto> buscarPorId(@PathVariable Long id) {
-        SaldoResponseDto response = SaldoResponseDto.from(buscarSaldoPort.buscarPorId(id));
+        SaldoResponseDto response = SaldoResponseDto.from(buscarSaldoHttpPort.buscarPorId(id));
+
         return ResponseEntity.ok(response);
     }
 
@@ -420,83 +472,53 @@ public class GlobalExceptionHandler {
 
 #### `SaldoSqsListener.java`
 
-Adaptador de entrada AWS SQS. Escuta a fila, desserializa o JSON, converte para entidade de domínio e invoca `ProcessarSaldoPort`.
+Adaptador de entrada AWS SQS. Escuta a fila, desserializa o JSON, converte para entidade de domínio e aciona o core via `ProcessarSaldoEventoPort` — o contrato que o core declarou especificamente para recebimento de eventos assíncronos.
 
 ```java
 @Component
 public class SaldoSqsListener {
+
+    private final ProcessarSaldoEventoPort processarSaldoEventoPort;
 
     @SqsListener("${app.sqs.queue-name}")
     public void onMessage(@Payload SaldoMensagemDto mensagem) {
-        Saldo saldo = toDomain(mensagem);               // converte DTO → domínio
-        processarSaldoUseCase.processar(saldo);         // delega ao core
+        Saldo saldo = toDomain(mensagem);
+        processarSaldoEventoPort.aoReceberSaldo(saldo); // aciona pelo contrato de evento
     }
 }
 ```
 
-#### O problema de acoplar o listener diretamente ao UseCase
+#### Por que `ProcessarSaldoEventoPort` e não `ProcessarSaldoPort` diretamente?
 
-O adapter hoje chama `ProcessarSaldoPort` diretamente — o que funciona, mas viola um princípio sutil da arquitetura hexagonal: **o core não declara explicitamente que aceita acionamentos via evento**.
+Essa é a diferença entre uma arquitetura hexagonal completa e uma simplificada.
 
-Isso significa que se o SQS for substituído por RabbitMQ ou Kafka, o novo listener simplesmente cria uma nova dependência direta para o mesmo `UseCase`, sem nenhum contrato formal que garanta que o protocolo de entrada está sendo respeitado.
+Se o listener injetasse `ProcessarSaldoPort` diretamente, o core não declararia formalmente que aceita acionamentos via evento — essa informação existiria apenas no adapter. A consequência prática: se o SQS fosse substituído por RabbitMQ, nada no core garantiria que o novo listener respeita o mesmo protocolo de entrada.
 
-A solução arquiteturalmente correta seria criar uma porta de entrada específica para eventos no core:
+Com `ProcessarSaldoEventoPort`, o core declara explicitamente:
 
-```java
-// core/port/in — o core declara que aceita acionamentos via evento
-// agnóstico de tecnologia: não sabe se é SQS, Rabbit ou Kafka
-public interface ProcessarSaldoEventoPort {
-    void aoReceberSaldo(Saldo saldo);
-}
-```
+> *"Existo um contrato para quem quiser me acionar via evento assíncrono. Implemente-o."*
+
+Trocar SQS por RabbitMQ se torna trivial e seguro:
 
 ```java
-// core/usecase — implementa tanto o UseCase quanto a porta de evento
-public class ProcessarSaldoUseCaseImpl
-        implements ProcessarSaldoPort, ProcessarSaldoEventoPort {
-
-    public void aoReceberSaldo(Saldo saldo) {
-        this.processar(saldo); // delega ao próprio caso de uso
-    }
-}
-```
-
-```java
-// adapter/in/sqs — fala com o core pelo contrato, não pelo UseCase diretamente
-@Component
-public class SaldoSqsListener {
-
-    private final ProcessarSaldoEventoPort port; // contrato declarado no core
-
-    public void onMessage(SaldoMensagemDto dto) {
-        port.aoReceberSaldo(toDomain(dto));
-    }
-}
-```
-
-Agora, se o SQS for trocado por RabbitMQ:
-
-```java
-// Apenas o adapter muda — o core e o contrato permanecem intactos
+// Novo adapter — apenas o listener muda, o contrato e o core permanecem intactos
 @Component
 public class SaldoRabbitListener {
 
-    private final ProcessarSaldoEventoPort port; // mesmo contrato
+    private final ProcessarSaldoEventoPort processarSaldoEventoPort; // mesmo contrato
 
     public void onMessage(SaldoMensagemDto dto) {
-        port.aoReceberSaldo(toDomain(dto));
+        processarSaldoEventoPort.aoReceberSaldo(toDomain(dto));
     }
 }
 ```
 
-| | Implementação atual | Com `ProcessarSaldoEventoPort` |
+| | Sem porta de acionamento | Com `ProcessarSaldoEventoPort` |
 |---|---|---|
 | Core muda ao trocar SQS por Rabbit? | ❌ Não | ❌ Não |
-| Contrato de entrada declarado no core? | ❌ Não | ✅ Sim |
+| Core declara que aceita eventos? | ❌ Não | ✅ Sim |
 | Compilador garante o protocolo? | ❌ Não | ✅ Sim |
-| Adapter acoplado diretamente ao UseCase? | ✅ Sim | ❌ Não |
-
-A implementação atual é uma **simplificação consciente** — funciona e não viola a regra de que o core não conhece SQS. Mas em sistemas onde múltiplos mecanismos de entrega de eventos coexistem, declarar `ProcessarSaldoEventoPort` no core é o caminho correto para garantir o verdadeiro agnosticismo de tecnologia.
+| Adapter acoplado à porta genérica? | ✅ Sim | ❌ Não |
 
 ---
 
