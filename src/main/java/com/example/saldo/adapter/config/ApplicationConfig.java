@@ -1,7 +1,7 @@
 package com.example.saldo.adapter.config;
 
-import com.example.saldo.core.port.in.BuscarSaldoUseCase;
-import com.example.saldo.core.port.in.ProcessarSaldoUseCase;
+import com.example.saldo.core.port.in.BuscarSaldoPort;
+import com.example.saldo.core.port.in.ProcessarSaldoPort;
 import com.example.saldo.core.port.out.SaldoRepositoryPort;
 import com.example.saldo.core.usecase.BuscarSaldoUseCaseImpl;
 import com.example.saldo.core.usecase.ProcessarSaldoUseCaseImpl;
@@ -10,18 +10,21 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * Cola entre o core (POJOs puros) e o Spring.
- * Único lugar que conhece tanto as implementações do core quanto o container.
+ *
+ * Instancia os casos de uso e os registra como Beans tipados
+ * pelas suas portas de entrada — garantindo que os adapters
+ * dependem apenas dos contratos (Port), nunca das implementações.
  */
 @Configuration
 public class ApplicationConfig {
 
     @Bean
-    public ProcessarSaldoUseCase processarSaldoUseCase(SaldoRepositoryPort saldoRepositoryPort) {
+    public ProcessarSaldoPort processarSaldoPort(SaldoRepositoryPort saldoRepositoryPort) {
         return new ProcessarSaldoUseCaseImpl(saldoRepositoryPort);
     }
 
     @Bean
-    public BuscarSaldoUseCase buscarSaldoUseCase(SaldoRepositoryPort saldoRepositoryPort) {
+    public BuscarSaldoPort buscarSaldoPort(SaldoRepositoryPort saldoRepositoryPort) {
         return new BuscarSaldoUseCaseImpl(saldoRepositoryPort);
     }
 }

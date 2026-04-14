@@ -1,7 +1,7 @@
 package com.example.saldo.infrastructure.adapter.in.sqs;
 
 import com.example.saldo.core.model.Saldo;
-import com.example.saldo.core.port.in.ProcessarSaldoUseCase;
+import com.example.saldo.core.port.in.ProcessarSaldoPort;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -19,7 +19,7 @@ import static org.mockito.Mockito.*;
 class SaldoSqsListenerTest {
 
     @Mock
-    private ProcessarSaldoUseCase processarSaldoUseCase;
+    private ProcessarSaldoPort processarSaldoPort;
 
     @InjectMocks
     private SaldoSqsListener listener;

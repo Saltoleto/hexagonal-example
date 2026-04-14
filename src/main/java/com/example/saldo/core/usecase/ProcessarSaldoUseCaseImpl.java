@@ -1,22 +1,25 @@
 package com.example.saldo.core.usecase;
 
 import com.example.saldo.core.model.Saldo;
-import com.example.saldo.core.port.in.ProcessarSaldoUseCase;
+import com.example.saldo.core.port.in.ProcessarSaldoPort;
 import com.example.saldo.core.port.out.SaldoRepositoryPort;
+import jakarta.transaction.Transactional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import jakarta.transaction.Transactional;
 
 /**
- * Implementação do caso de uso.
+ * Caso de uso: processar saldo.
  *
- * Sem @Service — é um POJO puro que não conhece nenhum framework.
- * O Spring só sabe desta classe através do @Bean em ApplicationConfig.
+ * Implementa a porta de entrada ProcessarSaldoPort — é aqui que
+ * o contrato declarado no core ganha comportamento concreto.
  *
- * Isso preserva a regra: camadas de domínio e aplicação são
- * independentes de infraestrutura (Spring, JPA, AWS, etc).
+ * Responsabilidades:
+ *  - Aplicar a regra de validação do domínio
+ *  - Delegar a persistência à porta de saída SaldoRepositoryPort
+ *
+ * POJO puro — sem anotações Spring. Registrado como Bean via ApplicationConfig.
  */
-public class ProcessarSaldoUseCaseImpl implements ProcessarSaldoUseCase {
+public class ProcessarSaldoUseCaseImpl implements ProcessarSaldoPort {
 
     private static final Logger log = LoggerFactory.getLogger(ProcessarSaldoUseCaseImpl.class);
 

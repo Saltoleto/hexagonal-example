@@ -2,7 +2,7 @@ package com.example.saldo.adapter.in.sqs;
 
 import com.example.saldo.core.model.Saldo;
 import com.example.saldo.core.model.TipoSaldo;
-import com.example.saldo.core.port.in.ProcessarSaldoUseCase;
+import com.example.saldo.core.port.in.ProcessarSaldoPort;
 import io.awspring.cloud.sqs.annotation.SqsListener;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,10 +25,10 @@ public class SaldoSqsListener {
 
     private static final Logger log = LoggerFactory.getLogger(SaldoSqsListener.class);
 
-    private final ProcessarSaldoUseCase processarSaldoUseCase;
+    private final ProcessarSaldoPort processarSaldoPort;
 
-    public SaldoSqsListener(ProcessarSaldoUseCase processarSaldoUseCase) {
-        this.processarSaldoUseCase = processarSaldoUseCase;
+    public SaldoSqsListener(ProcessarSaldoPort processarSaldoPort) {
+        this.processarSaldoPort = processarSaldoPort;
     }
 
     @SqsListener("${app.sqs.queue-name}")
@@ -37,7 +37,7 @@ public class SaldoSqsListener {
 
         try {
             Saldo saldo = toDomain(mensagem);
-            processarSaldoUseCase.processar(saldo);
+            processarSaldoPort.processar(saldo);
         } catch (IllegalArgumentException e) {
             log.error("Mensagem inválida descartada: {}", e.getMessage());
             // Em produção: enviar para DLQ ou registrar métrica

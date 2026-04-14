@@ -2,11 +2,12 @@ package com.example.saldo.application.usecase;
 
 import com.example.saldo.core.model.Saldo;
 import com.example.saldo.core.model.TipoSaldo;
+import com.example.saldo.core.port.in.ProcessarSaldoPort;
 import com.example.saldo.core.port.out.SaldoRepositoryPort;
+import com.example.saldo.core.usecase.ProcessarSaldoUseCaseImpl;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -18,44 +19,37 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
-class ProcessarSaldoUseCaseTest {
+class ProcessarSaldoPortTest {
 
     @Mock
     private SaldoRepositoryPort saldoRepositoryPort;
 
-    @InjectMocks
-    private ProcessarSaldoUseCaseImpl useCase;
-
-    private Saldo saldoValido;
+    private ProcessarSaldoPort port;
 
     @BeforeEach
     void setUp() {
-        saldoValido = new Saldo(
-            "CC-001",
-            new BigDecimal("1500.00"),
-            "BRL",
-            TipoSaldo.CREDITO,
-            LocalDateTime.now()
-        );
+        port = new ProcessarSaldoUseCaseImpl(saldoRepositoryPort);
     }
 
     @Test
     void deveProcessarSaldoValido() {
-        Saldo saldoSalvo = new Saldo("CC-001", new BigDecimal("1500.00"), "BRL", TipoSaldo.CREDITO, LocalDateTime.now());
-        saldoSalvo.setId(1L);
-        when(saldoRepositoryPort.salvar(any())).thenReturn(saldoSalvo);
+        Saldo entrada = new Saldo("CC-001", new BigDecimal("1500.00"), "BRL", TipoSaldo.CREDITO, LocalDateTime.now());
+        Saldo salvo = new Saldo("CC-001", new BigDecimal("1500.00"), "BRL", TipoSaldo.CREDITO, LocalDateTime.now());
+        salvo.setId(1L);
 
-        Saldo resultado = useCase.processar(saldoValido);
+        when(saldoRepositoryPort.salvar(any())).thenReturn(salvo);
+
+        Saldo resultado = port.processar(entrada);
 
         assertThat(resultado.getId()).isEqualTo(1L);
-        verify(saldoRepositoryPort, times(1)).salvar(saldoValido);
+        verify(saldoRepositoryPort, times(1)).salvar(entrada);
     }
 
     @Test
     void deveRejeitarSaldoSemContaId() {
         Saldo invalido = new Saldo(null, new BigDecimal("100"), "BRL", TipoSaldo.DEBITO, LocalDateTime.now());
 
-        assertThatThrownBy(() -> useCase.processar(invalido))
+        assertThatThrownBy(() -> port.processar(invalido))
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("Saldo inválido");
 
@@ -66,7 +60,7 @@ class ProcessarSaldoUseCaseTest {
     void deveRejeitarSaldoSemValor() {
         Saldo invalido = new Saldo("CC-001", null, "BRL", TipoSaldo.CREDITO, LocalDateTime.now());
 
-        assertThatThrownBy(() -> useCase.processar(invalido))
+        assertThatThrownBy(() -> port.processar(invalido))
             .isInstanceOf(IllegalArgumentException.class);
     }
 }
